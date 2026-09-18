@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TORN Crime Item Tagger
 // @namespace    avengerred.torn
-// @version      2.11.0
+// @version      2.12.0
 // @description  Tags your inventory with [C] and [OC] badges showing which Crimes 2.0 and Organized Crimes each item is used for. Hover for the crimes, positions, and whether the item is consumed. Optional Torn API key adds live status for the OC you are in.
 // @author       AvengerRed
 // @license      MIT
@@ -37,7 +37,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '2.11.0';
+    const VERSION = '2.12.0';
     const LOG = (...a) => console.log('%c[CIT]', 'color:#d4a017;font-weight:bold', ...a);
     const WARN = (...a) => console.warn('[CIT]', ...a);
 
@@ -305,7 +305,7 @@
 
     const DATA = { catalogue: null, inventory: null, oc: null, ocIndex: null,
                    ocDefs: null, ocDefIndex: null, self: null, keyInfo: null,
-                   domInv: null, names: null, errors: {} };
+                   domInv: null, domQty: null, names: null, errors: {} };
 
     /* Ask Torn what this key is actually allowed to do, so the panel can report
        missing selections instead of the script failing silently. */
@@ -426,6 +426,7 @@
         }
         DATA.oc = oc;
         DATA.ocIndex = buildOcIndex(oc);
+        reconcileWithOC();
         return oc;
     }
 
@@ -554,6 +555,28 @@
             }));
     }
 
+    /* Torn tells us directly whether the item for our own position is available.
+       That beats anything scraped from a page, so correct the stored quantity
+       when the two disagree -- otherwise a sold item reads as still held. */
+    function reconcileWithOC() {
+        if (!DATA.ocIndex || !DATA.domInv) return;
+        let dirty = false;
+        Object.keys(DATA.ocIndex).forEach(id => {
+            const e = DATA.ocIndex[id];
+            if (!e.mine || e.myAvailable) return;
+            if (DATA.domInv[id] && DATA.domInv[id].q !== 0) {
+                LOG('OC says you do not have item', id, '- clearing stale stored quantity',
+                    DATA.domInv[id].q);
+                DATA.domInv[id] = { q: 0, c: DATA.domInv[id].c || '' };
+                dirty = true;
+            }
+        });
+        if (dirty) {
+            rebuildDomQty();
+            try { setV('cit_dominv', JSON.stringify(DATA.domInv)); } catch (e) {}
+        }
+    }
+
     const fmtLeft = ts => {
         const s = ts - Math.floor(Date.now() / 1000);
         if (s <= 0) return 'ready now';
@@ -595,7 +618,7 @@
 
     /* Effective inventory: the API's if it ever works, otherwise the one
        harvested from the pages you browse. */
-    const effInv = () => DATA.inventory || DATA.domInv || null;
+    const effInv = () => DATA.inventory || DATA.domQty || null;
 
     const qtyOf = id => {
         const inv = effInv();
@@ -611,23 +634,56 @@
     function loadDomInv() {
         try {
             const raw = getV('cit_dominv', null);
-            DATA.domInv = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : {};
+            const parsed = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : {};
+            /* Migrate the old {id: qty} shape to {id: {q, c}} so we can prune by
+               category. */
+            DATA.domInv = {};
+            Object.keys(parsed).forEach(id => {
+                const v = parsed[id];
+                DATA.domInv[id] = (v && typeof v === 'object')
+                    ? { q: v.q, c: v.c || '' }
+                    : { q: v, c: '' };
+            });
         } catch (e) { DATA.domInv = {}; }
+        rebuildDomQty();
         return DATA.domInv;
     }
 
-    let domInvDirty = false;
+    /* Flat {id: qty} view for everything that just wants a number. */
+    function rebuildDomQty() {
+        DATA.domQty = {};
+        Object.keys(DATA.domInv || {}).forEach(id => { DATA.domQty[id] = DATA.domInv[id].q; });
+    }
+
     function harvestDomInv(rowList) {
         if (!DATA.domInv) loadDomInv();
+        let dirty = false;
+        const seenCats = {}, seenIds = {};
+
         rowList.forEach(row => {
             const id = row.getAttribute('data-item');
             if (!id) return;
-            const dq = parseInt(row.getAttribute('data-qty'), 10);
-            const q = isNaN(dq) ? 1 : dq;          // no data-qty means a single item
-            if (DATA.domInv[id] !== q) { DATA.domInv[id] = q; domInvDirty = true; }
+            const cat = row.getAttribute('data-category') || '';
+            const dq  = parseInt(row.getAttribute('data-qty'), 10);
+            const q   = isNaN(dq) ? 1 : dq;        // no data-qty means a single item
+            seenCats[cat] = 1; seenIds[id] = 1;
+            const prev = DATA.domInv[id];
+            if (!prev || prev.q !== q || prev.c !== cat) {
+                DATA.domInv[id] = { q, c: cat };
+                dirty = true;
+            }
         });
-        if (domInvDirty) {
-            domInvDirty = false;
+
+        /* A sold or spent item simply vanishes from the page, so without this the
+           old quantity would linger forever. Any category fully on screen is
+           re-stated: drop stored items of that category we no longer see. */
+        Object.keys(DATA.domInv).forEach(id => {
+            const e = DATA.domInv[id];
+            if (e && seenCats[e.c] && !seenIds[id]) { delete DATA.domInv[id]; dirty = true; }
+        });
+
+        if (dirty) {
+            rebuildDomQty();
             try { setV('cit_dominv', JSON.stringify(DATA.domInv)); } catch (e) {}
         }
     }
@@ -1082,7 +1138,7 @@
                 const cls = e.mine && !e.myAvailable ? 'bad' : e.missing ? 'bad' : 'ok';
                 return `<div class="${cls}">${nameOfId(id)} ×${e.total}${e.mine ? ' <b>(your slot: ' + e.mySlot + ')</b>' : ''}` +
                        ` — ${e.missing ? e.missing + ' teammate(s) without it' : 'everyone has it'}` +
-                       `${have !== null ? ` · you hold ${have}` : ''}</div>`;
+                       `${have === null ? '' : (have > 0 ? ` · you hold ${have}` : ' · <b>you have none</b>')}</div>`;
             }).join('');
             const mine = myMissingItems();
             const warn = mine.length
