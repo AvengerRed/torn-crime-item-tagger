@@ -91,9 +91,13 @@ remote code, no external libraries.
 
 ## Notes
 
-- Torn's inventory API returns nothing usable, so quantities are read from the item pages themselves.
-  They fill in per category tab as you browse. Where the OC feed disagrees — it knows whether your
-  position has its item — the API wins.
+- Torn has retired the inventory API (`user/?selections=inventory` now replies *"The inventory
+  selection is no longer available"*, and the v2 replacement demands Full access). Quantities are
+  therefore read from your own item pages and fill in per category tab as you browse. Where the OC
+  feed disagrees — it knows whether your position has its item — the API wins.
+- The faction armoury is not reachable with a personal key either; those selections need faction API
+  access. The script reads the armoury off the page when you visit it and remembers what it saw, so
+  tooltips can tell you whether the faction pool actually has a spare before you go looking.
 - Results are cached (item catalogue and OC definitions weekly, your OC every two minutes, names for
   a week), so normal browsing costs a handful of API calls against a limit of 100 per minute.
 - Badges are injected only on item pages. The tab, panel and banner work everywhere on Torn.
