@@ -149,22 +149,6 @@ The script is built to stay inside them:
   ordinary browsing costs close to nothing. Loading the items or faction page refreshes your OC
   status, because navigating there is a deliberate action by you.
 
-## Notes
-
-- Torn has retired the inventory API (`user/?selections=inventory` now replies *"The inventory
-  selection is no longer available"*, and the v2 replacement demands Full access). Quantities are
-  therefore read from your own item pages and fill in per category tab as you browse. Where the OC
-  feed disagrees — it knows whether your position has its item — the API wins.
-- The faction armoury and faction crimes are not reachable with a personal key either; those
-  selections need faction API access and return error 7 without it. Both are read off their own
-  pages when you visit them and cached with a timestamp, so figures are labelled "as of" rather
-  than presented as live.
-- Faction page classes are hashed by Torn's build, so the armoury and OC Manager readers match on
-  class prefixes. A Torn UI rebuild is the most likely thing to break them.
-- Shop rows sit their names lower than the Items page does, so shop badges get their own vertical
-  nudge (`html.cit-sell .cit-badge`). If a Torn layout change leaves them misaligned, that single
-  `top` value is the only thing to adjust.
-
 ## Found a bug?
 
 Before reporting, click **Diagnostics** in the CIT panel, then open the browser console (F12) and
