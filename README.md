@@ -26,7 +26,7 @@ The script works without a key using its built-in crime data. Adding a key enabl
 the organized crime you are currently in, and pulls OC definitions straight from Torn so they stay
 correct when the game changes.
 
-Open the **CIT** tab → paste key → Save.
+Click on **CIT** button on the right side → paste key → Save.
 
 A **Limited Access** key works. Better, use Torn's
 [custom key builder](https://www.torn.com/api.html) and grant only:
