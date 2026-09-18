@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TORN Crime Item Tagger
 // @namespace    avengerred.torn
-// @version      2.36.1
+// @version      2.37.0
 // @description  Tags your inventory with [C] and [OC] badges showing which Crimes 2.0 and Organized Crimes each item is used for. Hover for the crimes, positions and whether the item is consumed. An optional Torn API key adds live status for the OC you are in, warns you when your own position is short an item, and helps you loan one to a teammate.
 // @author       AvengerRed
 // @license      MIT
@@ -55,7 +55,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '2.34.0';
+    const VERSION = '2.37.0';
     /* Torn's rules forbid reading pages you are not actively viewing, and
        forbid requests that you did not trigger. So nothing runs while the tab is
        hidden: no DOM harvesting, no API calls. Work resumes when you look at the
@@ -533,6 +533,29 @@
         }));
     }, true);
 
+    /* A missing item's own name links to the faction armoury and asks the
+       helper to find and highlight that item's row. No member is involved --
+       this is "show me where it is", not a loan, so nothing is copied and
+       nothing is filled in. */
+    function grabLink(itemId, itemName, cls) {
+        return `<a class="cit-grab${cls ? ' ' + cls : ''}" href="${ARMOURY_URL}"` +
+               ` data-cit-grab="${esc(String(itemId))}"` +
+               ` data-cit-item="${esc(itemName || '')}"` +
+               ` title="Open the faction armoury and highlight ${esc(itemName || 'this item')}">` +
+               `${esc(itemName || 'item')}</a>`;
+    }
+
+    document.addEventListener('click', e => {
+        const a = e.target && e.target.closest && e.target.closest('a[data-cit-grab]');
+        if (!a) return;
+        setV('cit_loan_intent', JSON.stringify({
+            itemId:   a.getAttribute('data-cit-grab'),
+            itemName: a.getAttribute('data-cit-item'),
+            grab: true,
+            ts: Date.now()
+        }));
+    }, true);
+
     /* itemId -> { total, mine, missing, reusable, slots:[labels], crime, ready_at } */
     function buildOcIndex(oc) {
         if (!oc || !Array.isArray(oc.slots)) return null;
@@ -997,6 +1020,10 @@
 
         #cit-panel .ok   { color:#6ab04c; }
         #cit-panel .bad  { color:#c0392b; }
+        #cit-panel a.cit-grab, #cit-tip a.cit-grab { color:#8ab4f8; text-decoration:underline;
+            text-decoration-style:dotted; text-underline-offset:2px; cursor:pointer; }
+        #cit-panel a.cit-grab:hover, #cit-tip a.cit-grab:hover { color:#aecbfa;
+            text-decoration-style:solid; }
         #cit-panel .muted{ color:#888; }
         #cit-close { float:right; cursor:pointer; color:#888; }
     `;
@@ -1539,7 +1566,7 @@
             const mine = myMissingItems();
             const warn = mine.length
                 ? `<div class="bad" style="margin:4px 0 6px"><b>\u26A0 You are missing: ` +
-                  `${mine.map(m => esc(m.name)).join(', ')}</b> for your position ` +
+                  `${mine.map(m => grabLink(m.id, m.name)).join(', ')}</b> for your position ` +
                   `(${esc(mine[0].slot || '?')})</div>`
                 : '';
             ocHtml = `<div><b>${oc.name}</b> · ${oc.status} · ready in ${fmtLeft(oc.ready_at)}</div>`
@@ -2092,11 +2119,17 @@
         let it; try { it = JSON.parse(raw); } catch (e) { return; }
         if (!it || Date.now() - it.ts > 180000) return;    // stale
 
-        const who = it.userName ? `${it.userName} [${it.userId}]` : String(it.userId);
-        const copied = copyText(who);
-        const copyNote = copied
-            ? `<b>${esc(who)}</b> is on your clipboard \u2014 paste it into the member box.`
-            : `Member to loan to: <b>${esc(who)}</b> (copy it manually).`;
+        /* A grab intent has no member: the user is fetching the item for their
+           own position, so there is nothing to copy and nothing to paste. */
+        const grabOnly = !it.userId;
+        const who = grabOnly ? '' :
+            (it.userName ? `${it.userName} [${it.userId}]` : String(it.userId));
+        const copied = grabOnly ? false : copyText(who);
+        const copyNote = grabOnly
+            ? `Click <b>Give</b> on that row to take it for your own position.`
+            : (copied
+                ? `<b>${esc(who)}</b> is on your clipboard \u2014 paste it into the member box.`
+                : `Member to loan to: <b>${esc(who)}</b> (copy it manually).`);
 
         const banner = loanBanner(
             `Looking for <b>${esc(it.itemName)}</b> in the armoury\u2026` +
@@ -2127,9 +2160,11 @@
             if (banner) banner.remove();
             const b2 = loanBanner(
                 `<b>${esc(it.itemName)}</b> is highlighted below.` +
-                `<div class="cit-banner-sub">${copyNote} ` +
-                `Click <b>Loan</b> on that row, set the quantity and press LOAN yourself. ` +
-                `<span class="cit-recopy">Copy again</span></div>`, 'ok');
+                `<div class="cit-banner-sub">${copyNote}` +
+                (grabOnly ? '' :
+                    ` Click <b>Loan</b> on that row, set the quantity and press LOAN yourself. ` +
+                    `<span class="cit-recopy">Copy again</span>`) +
+                `</div>`, 'ok');
             const again = b2.querySelector('.cit-recopy');
             if (again) again.onclick = () => {
                 again.textContent = copyText(who) ? 'Copied' : 'Copy failed';
