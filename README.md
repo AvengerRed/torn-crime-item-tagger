@@ -28,8 +28,7 @@ correct when the game changes.
 
 Click on **CIT** button on the right side → paste key → Save.
 
-A **Limited Access** key works. Better, use Torn's
-[custom key builder](https://www.torn.com/api.html) and grant only:
+A **Limited Access** key is enough. **No NEED for Full Access key.**
 
 | Section | Selection |
 |---|---|
