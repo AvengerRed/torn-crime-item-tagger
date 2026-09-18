@@ -3,6 +3,14 @@
 Tags your inventory so you can see at a glance which items are used for **Crimes 2.0** and which are
 used for **Organized Crimes** — without cross-referencing the wiki every time.
 
+### Don't sell what a crime needs
+
+![Crime and OC items dimmed in a Torn shop](screenshot3.png)
+
+*Selling to an NPC shop with **Dim Crime & OC Items** on. Everything a crime or an organized crime
+needs is greyed out and badged, so the rows you are safe to sell are the bright ones — no more
+dumping a stack of Gasoline an hour before the OC needs it.*
+
 ### Organized Crime tooltip
 
 ![Organized Crime tooltip](screenshot.png)
