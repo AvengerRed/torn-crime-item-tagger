@@ -1,10 +1,12 @@
 // ==UserScript==
 // @name         TORN Crime Item Tagger
 // @namespace    avengerred.torn
-// @version      2.9.0
+// @version      2.10.0
 // @description  Tags your inventory with [C] and [OC] badges showing which Crimes 2.0 and Organized Crimes each item is used for. Hover for the crimes, positions, and whether the item is consumed. Optional Torn API key adds live status for the OC you are in.
 // @author       AvengerRed
 // @license      MIT
+// @homepageURL  https://github.com/AvengerRed/torn-crime-item-tagger
+// @supportURL   https://github.com/AvengerRed/torn-crime-item-tagger/issues
 // @match        https://www.torn.com/item.php*
 // @match        https://www.torn.com/items.php*
 // @match        https://www.torn.com/bazaar.php*
@@ -35,7 +37,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '2.9.0';
+    const VERSION = '2.10.0';
     const LOG = (...a) => console.log('%c[CIT]', 'color:#d4a017;font-weight:bold', ...a);
     const WARN = (...a) => console.warn('[CIT]', ...a);
 
@@ -436,12 +438,16 @@
             if (!req || !req.id) return;
             const e = idx[req.id] || (idx[req.id] = {
                 total: 0, mine: false, missing: 0, reusable: !!req.is_reusable,
-                slots: [], crime: oc.name, status: oc.status, ready_at: oc.ready_at
+                slots: [], missingSlots: [], crime: oc.name, status: oc.status,
+                ready_at: oc.ready_at
             });
             e.total++;
             const label = (s.position_info && s.position_info.label) || s.position || '?';
             e.slots.push(label);
-            if (!req.is_available) e.missing++;
+            if (!req.is_available) {
+                e.missing++;
+                e.missingSlots.push({ label, userId: s.user && s.user.id });
+            }
             if (myId && s.user && s.user.id === myId) {
                 e.mine = true;
                 e.myAvailable = !!req.is_available;
@@ -500,6 +506,24 @@
         });
         LOG('OC item index built:', Object.keys(idx).length, 'distinct items across', defs.length, 'crimes');
         return idx;
+    }
+
+    /* Items your own position needs that you do not own. These can never appear
+       as a badge -- you don't have the item, so there is no inventory row to
+       attach one to -- so they surface as a banner and in the panel instead. */
+    function myMissingItems() {
+        if (!DATA.ocIndex) return [];
+        return Object.keys(DATA.ocIndex)
+            .filter(id => DATA.ocIndex[id].mine && !DATA.ocIndex[id].myAvailable)
+            .map(id => ({
+                id,
+                name: (DATA.catalogue && DATA.catalogue[id])
+                      || (DATA.ocDefIndex && DATA.ocDefIndex[id] && DATA.ocDefIndex[id].name)
+                      || ('item ' + id),
+                slot: DATA.ocIndex[id].mySlot,
+                crime: DATA.ocIndex[id].crime,
+                ready_at: DATA.ocIndex[id].ready_at
+            }));
     }
 
     const fmtLeft = ts => {
@@ -644,6 +668,19 @@
         .cit-dimmed { opacity:.45; }
         li.cit-alert { outline:1px solid rgba(192,57,43,.8); outline-offset:-1px; }
 
+        /* Banner for items your own position needs but you do not own. There is
+           no inventory row for a missing item, so a badge could never show it. */
+        #cit-banner { position:fixed; top:0; left:50%; transform:translateX(-50%);
+            z-index:2147483550; max-width:640px; width:calc(100% - 24px);
+            background:#7a1c14; color:#fff; border:1px solid #c0392b; border-top:none;
+            border-radius:0 0 6px 6px; padding:9px 38px 9px 14px;
+            font:13px/1.45 Arial,sans-serif; box-shadow:0 4px 18px rgba(0,0,0,.6); }
+        #cit-banner b { color:#ffd9d4; }
+        #cit-banner .cit-banner-sub { font-size:11px; color:#f0bdb6; margin-top:2px; }
+        #cit-banner .cit-banner-x { position:absolute; top:6px; right:10px; cursor:pointer;
+            color:#f0bdb6; font-size:15px; line-height:1; }
+        #cit-banner .cit-banner-x:hover { color:#fff; }
+
         /* Right-edge button, same idiom as the HT / FF tabs. */
         #cit-tip { position:fixed; display:none; z-index:2147483600; max-width:330px;
             background:#191919; color:#ddd; border:1px solid #555; border-radius:6px;
@@ -765,13 +802,29 @@
     const haveLine = q => q === null ? ''
         : `<div class="cit-tip-have">In your inventory: <b>${q}</b></div>`;
 
+    /* The stored description often repeats the crime name ("Burglary: Beach Hut
+       ..."), which reads badly under a "Burglary" heading. Strip that prefix,
+       and turn "Enhancer: <crime>" into plain words. */
+    function descFor(t, crime) {
+        const rx = crime.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const m = t.c.match(/^Enhancer:\s*(.*)$/i);
+        if (m) {
+            let rest = m[1].replace(new RegExp('^' + rx, 'i'), '')
+                           .replace(/^\s*[\/\-\u2013\u2014]\s*/, '').trim();
+            const wrapped = rest.match(/^\((.*)\)$/);      // "(halves production time)"
+            if (wrapped) rest = wrapped[1];
+            return rest ? `Crime enhancer \u2014 ${rest}` : 'Crime enhancer';
+        }
+        return t.c.replace(new RegExp('^' + rx + '\\s*:\\s*', 'i'), '');
+    }
+
     function crimeTip(t, name, q, crimes) {
         const sub = crimes.length
             ? `Used in ${crimes.length} crime${crimes.length > 1 ? 's' : ''}`
             : '';
         let body = crimes.map(c =>
             `<div class="cit-tip-crime"><div class="cit-tip-crime-name">${esc(c)}</div>` +
-            `<div class="cit-tip-dim">${esc(t.c)}</div></div>`).join('');
+            `<div class="cit-tip-dim">${esc(descFor(t, c))}</div></div>`).join('');
         if (!crimes.length) body = `<div class="cit-tip-p">${esc(t.c)}</div>`;
 
         const uses = forgeryUsesOf(name);
@@ -781,7 +834,7 @@
         }
         if (t.skill) body += `<div class="cit-tip-warn">You need ${esc(t.skill.crime)} skill ` +
                              `${t.skill.level} before you can use this.</div>`;
-        return tipShell('#e8b93a', 'Used in Crimes', sub, body + haveLine(q));
+        return tipShell('#e8b93a', 'Crime item', sub, body + haveLine(q));
     }
 
     function ocLiveTip(live, q, def) {
@@ -794,9 +847,19 @@
         }
         body += `<div class="cit-tip-label">Positions needing it</div>` +
                 `<div class="cit-tip-p">${esc(live.slots.join(', '))}</div>`;
-        body += live.missing
-            ? `<div class="cit-tip-warn">${live.missing} of ${live.total} still unfilled.</div>`
-            : `<div class="cit-tip-ok">All ${live.total} slots are covered.</div>`;
+        if (live.missing) {
+            /* is_available === false means the member IN that position does not
+               have the item -- it does NOT mean the position is empty. */
+            body += `<div class="cit-tip-warn">${live.missing} teammate` +
+                    `${live.missing > 1 ? 's do' : ' does'} not have this item yet:</div>`;
+            body += live.missingSlots.map(m =>
+                `<div class="cit-tip-p cit-tip-dim">${esc(m.label)}` +
+                (m.userId ? ` \u2014 <a href="https://www.torn.com/profiles.php?XID=${m.userId}"`
+                          + ` target="_blank" rel="noopener">profile</a>` : '') +
+                `</div>`).join('');
+        } else {
+            body += `<div class="cit-tip-ok">Everyone in this crime has it.</div>`;
+        }
         body += `<div class="cit-tip-p cit-tip-dim">${live.reusable
             ? 'You get this item back when the crime finishes.'
             : 'This item is used up when the crime runs.'}</div>`;
@@ -984,10 +1047,17 @@
                 const have = qtyOf(id);
                 const cls = e.mine && !e.myAvailable ? 'bad' : e.missing ? 'bad' : 'ok';
                 return `<div class="${cls}">${nameOfId(id)} ×${e.total}${e.mine ? ' <b>(your slot: ' + e.mySlot + ')</b>' : ''}` +
-                       ` — ${e.missing ? e.missing + ' missing' : 'all covered'}` +
+                       ` — ${e.missing ? e.missing + ' teammate(s) without it' : 'everyone has it'}` +
                        `${have !== null ? ` · you hold ${have}` : ''}</div>`;
             }).join('');
-            ocHtml = `<div><b>${oc.name}</b> · ${oc.status} · ready in ${fmtLeft(oc.ready_at)}</div>${rowsHtml}`;
+            const mine = myMissingItems();
+            const warn = mine.length
+                ? `<div class="bad" style="margin:4px 0 6px"><b>\u26A0 You are missing: ` +
+                  `${mine.map(m => esc(m.name)).join(', ')}</b> for your position ` +
+                  `(${esc(mine[0].slot || '?')})</div>`
+                : '';
+            ocHtml = `<div><b>${oc.name}</b> · ${oc.status} · ready in ${fmtLeft(oc.ready_at)}</div>`
+                   + warn + rowsHtml;
         }
 
         /* Coverage across every OC in the game, from the authoritative defs. */
@@ -1136,6 +1206,34 @@
         }
     }
 
+    /* Show one banner listing every item your position is short of. Dismissal is
+       remembered per crime + item set, so it returns if the situation changes. */
+    function renderMissingBanner() {
+        document.getElementById('cit-banner')?.remove();
+        const missing = myMissingItems();
+        if (!missing.length) return;
+
+        const sig = missing[0].crime + '|' + missing.map(m => m.id).sort().join(',');
+        if (getV('cit_banner_dismissed', '') === sig) return;
+
+        const m0 = missing[0];
+        const names = missing.map(m => m.name).join(', ');
+        const b = document.createElement('div');
+        b.id = 'cit-banner';
+        b.innerHTML =
+            `<span class="cit-banner-x" title="Dismiss">\u2715</span>` +
+            `\u26A0 Your <b>${esc(m0.crime)}</b> position (<b>${esc(m0.slot || '?')}</b>) ` +
+            `is missing: <b>${esc(names)}</b>` +
+            `<div class="cit-banner-sub">The crime starts in ${fmtLeft(m0.ready_at)}. ` +
+            `You will not see a badge for ${missing.length > 1 ? 'these items' : 'this item'} ` +
+            `— you do not own ${missing.length > 1 ? 'them' : 'it'} yet.</div>`;
+        b.querySelector('.cit-banner-x').onclick = () => {
+            setV('cit_banner_dismissed', sig);
+            b.remove();
+        };
+        document.body.appendChild(b);
+    }
+
     function togglePanel() {
         const p = document.getElementById('cit-panel');
         if (p) { p.remove(); setV('cit_open', false); }
@@ -1170,6 +1268,7 @@
         await step('oc',        loadOwnOC);
 
         updateTabDot();
+        renderMissingBanner();
     }
 
     new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true });
