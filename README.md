@@ -34,8 +34,8 @@ use the item*; the tooltip breaks down the positions inside each one.
 
 A badge can't tell you that — a missing item has no inventory row to put a badge on. So instead
 you get a **red banner** at the top of the page naming the item, your position, and how long until
-the crime runs, plus a red dot on the CIT tab. The banner can be dismissed, and returns if the
-situation changes.
+the crime runs, plus a red dot on the CIT tab. You can hide the banner, but it reappears on every
+page load until you actually have the item — so it can't be forgotten before the crime runs.
 
 ### The panel
 
