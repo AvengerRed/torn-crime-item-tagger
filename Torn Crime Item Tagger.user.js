@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         TORN Crime Item Tagger
 // @namespace    avengerred.torn
-// @version      2.18.1
-// @description  Tags your inventory with [C] and [OC] badges showing which Crimes 2.0 and Organized Crimes each item is used for. Hover for the crimes, positions, and whether the item is consumed. Optional Torn API key adds live status for the OC you are in.
+// @version      2.20.0
+// @description  Tags your inventory with [C] and [OC] badges showing which Crimes 2.0 and Organized Crimes each item is used for. Hover for the crimes, positions and whether the item is consumed. An optional Torn API key adds live status for the OC you are in, warns you when your own position is short an item, and helps you loan one to a teammate.
 // @author       AvengerRed
 // @license      MIT
 // @homepageURL  https://github.com/AvengerRed/torn-crime-item-tagger
@@ -13,6 +13,7 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
+// @grant        GM_setClipboard
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -25,16 +26,25 @@
  * no analytics or remote code are loaded.
  *
  * The key is optional. Without one the script still tags every item from its
- * built-in crime data; a key adds live status for the organized crime you are
- * currently in. A Limited-access key is enough. Better still, use Torn's
- * custom key builder and grant only: torn -> items, torn -> organizedcrimes,
- * user -> organizedcrime.
+ * built-in crime data. A key adds live status for the organized crime you are
+ * in, resolves teammate names, and keeps the OC definitions current.
+ *
+ * A Limited-access key works. Better, use Torn's custom key builder and grant
+ * only these four selections:
+ *     torn -> items             item names and IDs
+ *     torn -> organizedcrimes   every OC, its positions and required items
+ *     user -> organizedcrime    the OC you are currently in
+ *     user -> basic             resolving teammate IDs to names
+ *
+ * This script never clicks Loan, never fills the armoury form and never
+ * transfers an item. It highlights the right row and copies the member's
+ * "Name [id]" to the clipboard; every action is taken by the user.
  */
 
 (function () {
     'use strict';
 
-    const VERSION = '2.18.1';
+    const VERSION = '2.20.0';
     const LOG = (...a) => console.log('%c[CIT]', 'color:#d4a017;font-weight:bold', ...a);
     const WARN = (...a) => console.warn('[CIT]', ...a);
 
@@ -302,7 +312,7 @@
 
     const DATA = { catalogue: null, inventory: null, oc: null, ocIndex: null,
                    ocDefs: null, ocDefIndex: null, self: null, keyInfo: null,
-                   domInv: null, domQty: null, names: null, errors: {} };
+                   domInv: null, domQty: null, domNameToId: null, names: null, errors: {} };
 
     /* Ask Torn what this key is actually allowed to do, so the panel can report
        missing selections instead of the script failing silently. */
@@ -685,8 +695,25 @@
     /* Flat {id: qty} view for everything that just wants a number. */
     function rebuildDomQty() {
         DATA.domQty = {};
-        Object.keys(DATA.domInv || {}).forEach(id => { DATA.domQty[id] = DATA.domInv[id].q; });
+        DATA.domNameToId = {};
+        Object.keys(DATA.domInv || {}).forEach(id => {
+            DATA.domQty[id] = DATA.domInv[id].q;
+            const n = DATA.domInv[id].n;
+            if (n) DATA.domNameToId[n.toLowerCase()] = id;
+        });
     }
+
+    /* Name -> id from the API catalogue when there is a key, otherwise from the
+       rows already seen. Without this the coverage sections stay blank for
+       anyone running without a key. */
+    const idForName = nm => {
+        const k = String(nm).toLowerCase();
+        return (DATA.nameToId && DATA.nameToId[k])
+            || (DATA.domNameToId && DATA.domNameToId[k])
+            || null;
+    };
+    const haveNameIndex = () => !!((DATA.nameToId && Object.keys(DATA.nameToId).length) ||
+                                   (DATA.domNameToId && Object.keys(DATA.domNameToId).length));
 
     function harvestDomInv(rowList) {
         if (!DATA.domInv) loadDomInv();
@@ -699,10 +726,12 @@
             const cat = row.getAttribute('data-category') || '';
             const dq  = parseInt(row.getAttribute('data-qty'), 10);
             const q   = isNaN(dq) ? 1 : dq;        // no data-qty means a single item
+            const nmEl = row.querySelector('.name-wrap .name') || row.querySelector('.name');
+            const nm = nmEl ? (nmEl.textContent || '').trim() : '';
             seenCats[cat] = 1; seenIds[id] = 1;
             const prev = DATA.domInv[id];
-            if (!prev || prev.q !== q || prev.c !== cat) {
-                DATA.domInv[id] = { q, c: cat };
+            if (!prev || prev.q !== q || prev.c !== cat || (nm && prev.n !== nm)) {
+                DATA.domInv[id] = { q, c: cat, n: nm || (prev && prev.n) || '' };
                 dirty = true;
             }
         });
@@ -744,9 +773,9 @@
     /* Forgery: which projects can be completed right now */
     function forgeryReadiness() {
         const inv = effInv();
-        if (!inv || !DATA.nameToId) return null;
+        if (!inv || !haveNameIndex()) return null;
         const have = nm => {
-            const id = DATA.nameToId[nm.toLowerCase()];
+            const id = idForName(nm);
             return id ? (inv[id] || 0) : 0;
         };
         const ready = [], blocked = [];
@@ -762,9 +791,9 @@
        by crime and check what you hold. */
     function crimeCoverage() {
         const inv = effInv();
-        const idOf = nm => DATA.nameToId ? DATA.nameToId[String(nm).toLowerCase()] : null;
+        const idOf = idForName;
         const qty  = nm => { const id = idOf(nm); return (id && inv && inv[id]) ? inv[id] : 0; };
-        const known = !!(inv && DATA.nameToId);
+        const known = !!(inv && haveNameIndex());
 
         const byCrime = {};
         Object.keys(ITEMS).forEach(nm => {
@@ -855,6 +884,21 @@
         #cit-banner .cit-banner-x { position:absolute; top:6px; right:10px; cursor:pointer;
             color:#f0bdb6; font-size:15px; line-height:1; }
         #cit-banner .cit-banner-x:hover { color:#fff; }
+        #cit-banner .cit-recopy { color:#fff; text-decoration:underline; cursor:pointer;
+            margin-left:4px; }
+
+        /* The armoury row to act on. The row's own background sits BEHIND its
+           cells, which are opaque, so the cells have to be tinted too. */
+        .cit-row-hit,
+        .cit-row-hit > *,
+        .cit-row-hit > * > * {
+            background-color:rgba(212,160,23,.30) !important;
+            transition:background-color .25s ease;
+        }
+        .cit-row-hit {
+            box-shadow:inset 0 0 0 2px #d4a017, 0 0 12px rgba(212,160,23,.5) !important;
+            border-radius:3px;
+        }
 
         /* Right-edge button, same idiom as the HT / FF tabs. */
         #cit-tip { position:fixed; display:none; z-index:2147483600; max-width:330px;
@@ -1489,17 +1533,32 @@
     }
 
     /* ==================================================================
-       SECTION 6b — ARMOURY LOAN ASSIST
-       Clicking a teammate's name stores what to loan, then navigates here. We
-       find the item's AVAILABLE row, open its loan form and prefill the member
-       box. The final LOAN click is always left to the user — this script never
-       transfers items on its own.
+       SECTION 6b — ARMOURY HELPER
+       Clicking a teammate's name stores what to loan and navigates here. All we
+       do on arrival is scroll to the right row, highlight it, and put
+       "Name [id]" on the clipboard so the member box is one paste away.
+       The script never clicks Loan, never fills the form and never transfers
+       anything — every action stays with the user.
        ================================================================== */
 
     const ON_FACTIONS = /\/factions\.php/.test(location.pathname);
     /* Badges only make sense where item rows exist; the tab and panel are
        available on every Torn page. */
     const ON_ITEMS = /\/(item|items|bazaar|imarket)\.php/.test(location.pathname);
+
+    function copyText(text) {
+        try { GM_setClipboard(text, 'text'); return true; } catch (e) {}
+        try {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.cssText = 'position:fixed;opacity:0;';
+            document.body.appendChild(ta);
+            ta.select();
+            const ok = document.execCommand('copy');
+            ta.remove();
+            return ok;
+        } catch (e) { return false; }
+    }
 
     function loanBanner(html, tone) {
         document.getElementById('cit-banner')?.remove();
@@ -1513,9 +1572,7 @@
     }
 
     /* The row action is "Loan"; the form's submit button is "LOAN". Case is what
-       separates them, so match exactly and never fall back to a loose compare
-       that could hit the submit button. Any tag can carry the text -- Torn uses
-       a span here, not an anchor. */
+       separates them. Any tag can carry the text -- Torn uses a span here. */
     const LOAN_TAGS = 'a, button, span, div, td, li';
 
     function loanControlIn(root) {
@@ -1525,129 +1582,61 @@
         }) || null;
     }
 
-    /* Smallest element holding the item name, an Available marker and a Loan
-       control -- and not the already-expanded loan form. */
+    /* Count non-overlapping occurrences, to reject containers spanning several
+       rows of the same item. */
+    function countOf(hay, needle) {
+        let n = 0, i = 0;
+        while ((i = hay.indexOf(needle, i)) !== -1) { n++; i += needle.length; }
+        return n;
+    }
+
+    /* Exactly one row, and its Loaned column must read Available.
+       The armoury lists the same item several times -- one pooled row plus one
+       per member it is out on loan to -- so the item name appearing twice means
+       we have grabbed a container spanning rows, not a row. */
     function findArmouryRow(itemName) {
         const cands = [];
         document.querySelectorAll('li, tr, div, td').forEach(el => {
-            const t = el.textContent || '';
-            if (t.indexOf(itemName) === -1) return;
-            if (!/Available/i.test(t)) return;
-            if (/Please select quantity/i.test(t)) return;           // the open form
-            if (t.length > 300) return;
+            const t = (el.textContent || '').trim();
+            if (t.length > 200) return;
+            if (countOf(t, itemName) !== 1) return;                  // exactly one row
+            if (/Please select quantity/i.test(t)) return;            // the open form
             if (!loanControlIn(el)) return;
+
+            /* The Loaned column is either the plain word "Available" or the
+               borrower's name as a link. A member could be called "Available",
+               so the text alone is not enough -- the cell must not be a link. */
+            const avail = Array.prototype.some.call(
+                el.querySelectorAll('td, span, div, li'),
+                c => {
+                    if (c.querySelector('td, span, div, li, a')) return false;  // leaf only
+                    if ((c.textContent || '').trim() !== 'Available') return false;
+                    if (c.tagName === 'A' || c.closest('a')) return false;      // a borrower
+                    if (c.getAttribute('href') || c.onclick) return false;
+                    return true;
+                });
+            if (!avail) return;
+
             cands.push(el);
         });
         cands.sort((a, b) => a.querySelectorAll('*').length - b.querySelectorAll('*').length);
-        LOG('armoury assist: row candidates for', itemName, '=', cands.length);
+        LOG('armoury helper: available-row candidates for', itemName, '=', cands.length);
         return cands[0] || null;
     }
 
-    /* If we cannot find the row, dump what the page actually looks like around
-       that item so the markup can be pinned instead of guessed at. */
+    /* If the row can't be found, dump the surrounding markup so it can be pinned
+       rather than guessed at. */
     function dumpArmouryContext(itemName) {
         const hit = Array.prototype.find.call(
             document.querySelectorAll('li, tr, div, td'),
             el => (el.textContent || '').indexOf(itemName) !== -1 &&
                   !el.querySelector('li, tr, td') &&
                   (el.textContent || '').length < 120);
-        if (!hit) { LOG('armoury assist: item name not present on this page at all'); return; }
+        if (!hit) { LOG('armoury helper: item name not present on this page'); return; }
         let n = hit, up = 0;
         while (n.parentElement && up < 4) { n = n.parentElement; up++; }
-        LOG('armoury assist: context around "' + itemName + '" (paste this):',
+        LOG('armoury helper: context around "' + itemName + '" (paste this):',
             n.outerHTML.slice(0, 2000));
-    }
-
-    /* React ignores a plain .value assignment, so use the native setter and
-       fire the events it listens for. */
-    function setReactValue(el, value) {
-        const proto = (el instanceof HTMLTextAreaElement)
-            ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-        const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
-        setter.call(el, value);
-        el.dispatchEvent(new Event('input',  { bubbles: true }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-        el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
-    }
-
-    /* Confirmed markup: the member picker is an autocomplete combobox
-         <input class="searchInput___*" role="combobox" name="userword"
-                aria-controls="userword-listbox" placeholder="search...">
-       Setting .value alone does not select anyone -- the listbox has to open and
-       an option has to be clicked. Other extensions (TornTools, Torn Honor
-       Tools) also add inputs to this page, so we only consider inputs that
-       appear AFTER the loan form opens. */
-
-    function visibleTextInputs() {
-        return Array.prototype.filter.call(
-            document.querySelectorAll('input[type="text"], input:not([type]), input[role="combobox"]'),
-            el => el.offsetParent !== null);
-    }
-
-    /* Confirmed by diffing the visible inputs before and after clicking Loan.
-       The loan form adds exactly two:
-         input.quantity.input-quantity            (defaults to 1)
-         input.ac-search.ui-autocomplete-input[name="user"]
-             data-action="autocompleteUserAjaxAction"
-       That second one is a jQuery-UI autocomplete, NOT the React combobox
-       named "userword" that also lives on this page. TornTools and Torn Honor
-       Tools add inputs here too, which is why we only consider inputs that
-       appeared after the form opened. */
-    function pickMemberBox(before) {
-        const now = visibleTextInputs();
-        const fresh = now.filter(el => before.indexOf(el) === -1);
-        const pool = fresh.length ? fresh : now;
-        return pool.find(el =>
-                   el.classList.contains('ac-search') ||
-                   el.name === 'user' ||
-                   el.classList.contains('ui-autocomplete-input') ||
-                   /autocompleteUser/i.test(el.getAttribute('data-action') || ''))
-            || pool.find(el => el.getAttribute('role') === 'combobox')
-            || null;
-    }
-
-    /* jQuery-UI menus often ignore a bare .click(). */
-    function fullClick(el) {
-        ['mousedown', 'mouseup', 'click'].forEach(type =>
-            el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window })));
-    }
-
-    /* The dropdown lists members as "Name [12345]", so match on the bracketed
-       id -- that is exact, unlike a name which can be a substring of another. */
-    function selectMember(input, userName, userId, done) {
-        const tag = '[' + userId + ']';
-
-        const findOption = () => Array.prototype.find.call(
-            document.querySelectorAll('li, a, div, span, p'),
-            o => {
-                if (!o.offsetParent) return false;                   // must be visible
-                if (o.querySelector('li, a, input')) return false;   // innermost only
-                const t = (o.textContent || '').trim();
-                return t.length < 60 && t.indexOf(tag) !== -1;
-            });
-
-        /* The list is usually already open with the whole faction in it; typing
-           just narrows it. Do both. */
-        setReactValue(input, userName || String(userId));
-        input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowDown' }));
-        input.focus();
-
-        let n = 0;
-        const timer = setInterval(() => {
-            if (++n > 30) {                                          // ~6s
-                clearInterval(timer);
-                LOG('armoury assist: no option matching', tag);
-                done(false);
-                return;
-            }
-            const opt = findOption();
-            if (!opt) return;
-            clearInterval(timer);
-            LOG('armoury assist: clicking option', (opt.textContent || '').trim());
-            fullClick(opt);
-            /* Confirm it actually took rather than assuming. */
-            setTimeout(() => done(String(input.value || '').indexOf(tag) !== -1), 400);
-        }, 200);
     }
 
     function armouryAssist() {
@@ -1658,19 +1647,23 @@
         if (!it || Date.now() - it.ts > 180000) return;    // stale
 
         const who = it.userName ? `${it.userName} [${it.userId}]` : String(it.userId);
-        let banner = loanBanner(
-            `Setting up a loan of <b>${esc(it.itemName)}</b> to <b>${esc(who)}</b>\u2026` +
-            `<div class="cit-banner-sub">Check the quantity, then press LOAN yourself. ` +
-            `This script never transfers items for you.</div>`);
+        const copied = copyText(who);
+
+        const copyNote = copied
+            ? `<b>${esc(who)}</b> is on your clipboard \u2014 paste it into the member box.`
+            : `Member to loan to: <b>${esc(who)}</b> (copy it manually).`;
+
+        const banner = loanBanner(
+            `Looking for <b>${esc(it.itemName)}</b>\u2026` +
+            `<div class="cit-banner-sub">${copyNote}</div>`);
 
         let tries = 0;
         const timer = setInterval(() => {
             if (++tries > 40) {                             // ~20s
                 clearInterval(timer);
                 loanBanner(`Could not find an available <b>${esc(it.itemName)}</b> row.` +
-                    `<div class="cit-banner-sub">Loan it to <b>${esc(who)}</b> manually. ` +
-                    `Details written to the console (F12).</div>`);
-                LOG('armoury assist: no available row for', it.itemName);
+                    `<div class="cit-banner-sub">${copyNote} Details in the console (F12).</div>`);
+                LOG('armoury helper: no available row for', it.itemName);
                 dumpArmouryContext(it.itemName);
                 return;
             }
@@ -1678,43 +1671,22 @@
             if (!row) return;
             clearInterval(timer);
 
-            row.scrollIntoView({ block: 'center' });
-            row.style.outline = '2px solid #d4a017';
+            row.classList.add('cit-row-hit');
+            row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            setTimeout(() => row.classList.remove('cit-row-hit'), 3000);
+            LOG('armoury helper: highlighted row for', it.itemName, row.tagName +
+                '.' + String(row.className || '').replace('cit-row-hit', '').trim());
 
-            const loanEl = loanControlIn(row);
-            if (!loanEl) {
-                loanBanner(`Found <b>${esc(it.itemName)}</b> but no Loan control on that row.`);
-                return;
-            }
-
-            const before = visibleTextInputs();             // ignore other extensions' inputs
-            loanEl.click();
-
-            let t2 = 0;
-            const t2timer = setInterval(() => {
-                if (++t2 > 30) {                            // ~12s
-                    clearInterval(t2timer);
-                    loanBanner(`Loan form for <b>${esc(it.itemName)}</b> is open.` +
-                        `<div class="cit-banner-sub">Type <b>${esc(who)}</b> into the member box, ` +
-                        `then press LOAN.</div>`, 'ok');
-                    return;
-                }
-                const box = pickMemberBox(before);
-                if (!box) return;
-                clearInterval(t2timer);
-                LOG('armoury assist: member combobox found', box.outerHTML.slice(0, 160));
-
-                selectMember(box, it.userName, it.userId, ok => {
-                    if (banner) banner.remove();
-                    loanBanner(ok
-                        ? `Ready: <b>${esc(it.itemName)}</b> \u2192 <b>${esc(who)}</b>` +
-                          `<div class="cit-banner-sub">Set the quantity and press LOAN.</div>`
-                        : `Loan form open for <b>${esc(it.itemName)}</b>.` +
-                          `<div class="cit-banner-sub">The member list did not offer a match \u2014 ` +
-                          `type <b>${esc(who)}</b> and pick them, then press LOAN.</div>`,
-                        ok ? 'ok' : undefined);
-                });
-            }, 400);
+            if (banner) banner.remove();
+            const b2 = loanBanner(
+                `<b>${esc(it.itemName)}</b> is highlighted below.` +
+                `<div class="cit-banner-sub">${copyNote} ` +
+                `Click <b>Loan</b> on that row, set the quantity and press LOAN yourself. ` +
+                `<span class="cit-recopy">Copy again</span></div>`, 'ok');
+            const again = b2.querySelector('.cit-recopy');
+            if (again) again.onclick = () => {
+                again.textContent = copyText(who) ? 'Copied' : 'Copy failed';
+            };
         }, 500);
     }
 
