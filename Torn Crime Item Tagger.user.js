@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TORN Crime Item Tagger
 // @namespace    avengerred.torn
-// @version      2.16.0
+// @version      2.17.0
 // @description  Tags your inventory with [C] and [OC] badges showing which Crimes 2.0 and Organized Crimes each item is used for. Hover for the crimes, positions, and whether the item is consumed. Optional Torn API key adds live status for the OC you are in.
 // @author       AvengerRed
 // @license      MIT
@@ -38,7 +38,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '2.16.0';
+    const VERSION = '2.17.0';
     const LOG = (...a) => console.log('%c[CIT]', 'color:#d4a017;font-weight:bold', ...a);
     const WARN = (...a) => console.warn('[CIT]', ...a);
 
@@ -1555,41 +1555,69 @@
             el => el.offsetParent !== null);
     }
 
+    /* Confirmed by diffing the visible inputs before and after clicking Loan.
+       The loan form adds exactly two:
+         input.quantity.input-quantity            (defaults to 1)
+         input.ac-search.ui-autocomplete-input[name="user"]
+             data-action="autocompleteUserAjaxAction"
+       That second one is a jQuery-UI autocomplete, NOT the React combobox
+       named "userword" that also lives on this page. TornTools and Torn Honor
+       Tools add inputs here too, which is why we only consider inputs that
+       appeared after the form opened. */
     function pickMemberBox(before) {
         const now = visibleTextInputs();
         const fresh = now.filter(el => before.indexOf(el) === -1);
         const pool = fresh.length ? fresh : now;
         return pool.find(el =>
-                   /userword/i.test(el.name || '') ||
-                   /userword/i.test(el.getAttribute('aria-controls') || '') ||
-                   el.getAttribute('role') === 'combobox')
+                   el.classList.contains('ac-search') ||
+                   el.name === 'user' ||
+                   el.classList.contains('ui-autocomplete-input') ||
+                   /autocompleteUser/i.test(el.getAttribute('data-action') || ''))
+            || pool.find(el => el.getAttribute('role') === 'combobox')
             || null;
     }
 
-    /* Type into the combobox, wait for its listbox, click the matching option. */
+    /* jQuery-UI menus often ignore a bare .click(). */
+    function fullClick(el) {
+        ['mousedown', 'mouseup', 'click'].forEach(type =>
+            el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window })));
+    }
+
+    /* The dropdown lists members as "Name [12345]", so match on the bracketed
+       id -- that is exact, unlike a name which can be a substring of another. */
     function selectMember(input, userName, userId, done) {
+        const tag = '[' + userId + ']';
+
+        const findOption = () => Array.prototype.find.call(
+            document.querySelectorAll('li, a, div, span, p'),
+            o => {
+                if (!o.offsetParent) return false;                   // must be visible
+                if (o.querySelector('li, a, input')) return false;   // innermost only
+                const t = (o.textContent || '').trim();
+                return t.length < 60 && t.indexOf(tag) !== -1;
+            });
+
+        /* The list is usually already open with the whole faction in it; typing
+           just narrows it. Do both. */
         setReactValue(input, userName || String(userId));
+        input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowDown' }));
         input.focus();
 
         let n = 0;
         const timer = setInterval(() => {
-            if (++n > 25) { clearInterval(timer); done(false); return; }   // ~5s
-            const lbId = input.getAttribute('aria-controls');
-            const lb = lbId ? document.getElementById(lbId) : null;
-            const opts = lb
-                ? lb.querySelectorAll('[role="option"], li, a, div')
-                : document.querySelectorAll('[role="option"]');
-            const match = Array.prototype.find.call(opts, o => {
-                const t = (o.textContent || '').trim();
-                if (!t) return false;
-                return t.indexOf(String(userId)) !== -1 ||
-                       (userName && t.toLowerCase().indexOf(userName.toLowerCase()) !== -1);
-            });
-            if (!match) return;
+            if (++n > 30) {                                          // ~6s
+                clearInterval(timer);
+                LOG('armoury assist: no option matching', tag);
+                done(false);
+                return;
+            }
+            const opt = findOption();
+            if (!opt) return;
             clearInterval(timer);
-            match.click();
-            LOG('armoury assist: picked listbox option', (match.textContent || '').trim());
-            done(true);
+            LOG('armoury assist: clicking option', (opt.textContent || '').trim());
+            fullClick(opt);
+            /* Confirm it actually took rather than assuming. */
+            setTimeout(() => done(String(input.value || '').indexOf(tag) !== -1), 400);
         }, 200);
     }
 
