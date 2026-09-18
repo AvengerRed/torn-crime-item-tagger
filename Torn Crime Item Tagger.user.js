@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TORN Crime Item Tagger
 // @namespace    avengerred.torn
-// @version      2.20.0
+// @version      2.36.1
 // @description  Tags your inventory with [C] and [OC] badges showing which Crimes 2.0 and Organized Crimes each item is used for. Hover for the crimes, positions and whether the item is consumed. An optional Torn API key adds live status for the OC you are in, warns you when your own position is short an item, and helps you loan one to a teammate.
 // @author       AvengerRed
 // @license      MIT
@@ -39,12 +39,39 @@
  * This script never clicks Loan, never fills the armoury form and never
  * transfers an item. It highlights the right row and copies the member's
  * "Name [id]" to the clipboard; every action is taken by the user.
+ *
+ * TORN RULES
+ * ----------
+ * - No automation: the script never clicks, submits or actions anything. It
+ *   only renders information and copies text to the clipboard.
+ * - No page scraping: it never fetches a torn.com page. It reads only the DOM
+ *   of the page you loaded and are looking at.
+ * - Nothing happens in a hidden tab: DOM reading and API calls are suspended
+ *   while the tab is not visible, and resume when you return to it.
+ * - The only network requests are to api.torn.com, the sanctioned API, and
+ *   results are cached so ordinary browsing costs very few calls.
  */
 
 (function () {
     'use strict';
 
-    const VERSION = '2.20.0';
+    const VERSION = '2.34.0';
+    /* Torn's rules forbid reading pages you are not actively viewing, and
+       forbid requests that you did not trigger. So nothing runs while the tab is
+       hidden: no DOM harvesting, no API calls. Work resumes when you look at the
+       tab again. */
+    const visible = () => !document.hidden;
+
+    function whenVisible(fn) {
+        if (visible()) return fn();
+        const onShow = () => {
+            if (!visible()) return;
+            document.removeEventListener('visibilitychange', onShow);
+            fn();
+        };
+        document.addEventListener('visibilitychange', onShow);
+    }
+
     const LOG = (...a) => console.log('%c[CIT]', 'color:#d4a017;font-weight:bold', ...a);
     const WARN = (...a) => console.warn('[CIT]', ...a);
 
@@ -259,11 +286,15 @@
         get dim()        { return getV('cit_dim', false); },
         set dim(v)       { setV('cit_dim', v); },
         get useApi()     { return getV('cit_useApi', true); },
-        set useApi(v)    { setV('cit_useApi', v); }
+        set useApi(v)    { setV('cit_useApi', v); },
+        get ocMgr()      { return getV('cit_ocmgr', false); },
+        set ocMgr(v)     { setV('cit_ocmgr', v); },
+        get dimTagged()  { return getV('cit_dimTagged', false); },
+        set dimTagged(v) { setV('cit_dimTagged', v); }
     };
 
     const TTL = { catalogue: 7 * 24 * 3600e3, ocDefs: 7 * 24 * 3600e3, names: 7 * 24 * 3600e3,
-                  inventory: 60e3, oc: 120e3 };
+                  keyInfo: 3600e3, inventory: 60e3, oc: 120e3 };
 
     function cacheGet(name, ttl) {
         const raw = getV('cit_cache_' + name, null);
@@ -312,13 +343,17 @@
 
     const DATA = { catalogue: null, inventory: null, oc: null, ocIndex: null,
                    ocDefs: null, ocDefIndex: null, self: null, keyInfo: null,
-                   domInv: null, domQty: null, domNameToId: null, names: null, errors: {} };
+                   domInv: null, domQty: null, domNameToId: null, names: null,
+                   armoury: null, facOC: null, ocReadAt: null, errors: {} };
 
     /* Ask Torn what this key is actually allowed to do, so the panel can report
        missing selections instead of the script failing silently. */
     async function loadKeyInfo() {
+        const cached = cacheGet('keyinfo', TTL.keyInfo);
+        if (cached) { DATA.keyInfo = cached; return cached; }
         try {
             const j = await API.raw('key/?selections=info');
+            cacheSet('keyinfo', j);
             DATA.keyInfo = j;
             LOG('key access level:', j.access_level, '(' + j.access_type + ')');
             return j;
@@ -376,26 +411,25 @@
     async function loadInventory() {
         let inv = cacheGet('inventory', TTL.inventory);
         if (!inv) {
-            /* v1 has been observed returning an empty inventory array even with
-               the selection granted, so fall through to v2. */
-            const tried = [];
-            for (const path of ['user/?selections=inventory',
-                                'v2/user?selections=inventory',
-                                'v2/user/items']) {
-                let j;
-                try { j = await API.raw(path); }
-                catch (e) { tried.push(path + ': ' + e.message); continue; }
-
-                const parsed = parseInventory(j);
-                if (parsed) {
-                    inv = parsed;
-                    LOG('inventory loaded from', path + ':', Object.keys(inv).length, 'stacks');
-                    break;
-                }
-                LOG('RAW payload from ' + path + ' (empty/unparsed):', JSON.parse(JSON.stringify(j)));
-                tried.push(path + ': returned 0 stacks');
+            /* Torn has RETIRED the inventory API: user/?selections=inventory
+               replies "The inventory selection is no longer available", and the
+               v2 replacement (v2/user/items) refuses anything below Full access
+               -- which is far more than this script should ever ask for.
+               So we only attempt it when the key already happens to be that
+               high, and otherwise rely entirely on quantities read from the
+               item pages. No point spending calls on a certain failure. */
+            const lvl = DATA.keyInfo && DATA.keyInfo.access_level;
+            if (!(lvl >= 4)) {
+                throw new Error('Torn retired the inventory API; using quantities from item pages');
             }
-            if (!inv) throw new Error(tried.join(' | '));
+            const j = await API.raw('v2/user/items');
+            const parsed = parseInventory(j);
+            if (!parsed) {
+                LOG('RAW payload from v2/user/items (empty/unparsed):', JSON.parse(JSON.stringify(j)));
+                throw new Error('v2/user/items returned nothing usable');
+            }
+            inv = parsed;
+            LOG('inventory loaded from v2/user/items:', Object.keys(inv).length, 'stacks');
             cacheSet('inventory', inv);
         }
         DATA.inventory = inv;
@@ -432,6 +466,7 @@
             }
         }
         DATA.oc = oc;
+        DATA.ocReadAt = Date.now();
         DATA.ocIndex = buildOcIndex(oc);
         Object.keys(DATA.ocIndex || {}).forEach(id => {
             DATA.ocIndex[id].itemName =
@@ -476,11 +511,12 @@
     /* A teammate's name links to the faction armoury rather than their profile,
        carrying what to loan and to whom. The handler stashes that, then lets the
        navigation happen normally. */
-    function loanLink(itemId, itemName, userId) {
-        const nm = memberName(userId) || ('ID ' + userId);
+    function loanLink(itemId, itemName, userId, fallbackName) {
+        const nm = memberName(userId) || fallbackName || ('ID ' + userId);
         return `<a class="cit-tip-who" href="${ARMOURY_URL}"` +
                ` data-cit-loan="${esc(String(itemId))}" data-cit-uid="${esc(String(userId))}"` +
-               ` data-cit-item="${esc(itemName || '')}" data-cit-name="${esc(memberName(userId) || '')}"` +
+               ` data-cit-item="${esc(itemName || '')}"` +
+               ` data-cit-name="${esc(memberName(userId) || fallbackName || '')}"` +
                ` title="Open the faction armoury and set up a loan of ${esc(itemName || 'this item')}` +
                ` to ${esc(nm)}">${esc(nm)}</a>`;
     }
@@ -716,6 +752,7 @@
                                    (DATA.domNameToId && Object.keys(DATA.domNameToId).length));
 
     function harvestDomInv(rowList) {
+        if (!visible()) return false;   // never read a tab you are not looking at
         if (!DATA.domInv) loadDomInv();
         let dirty = false;
         const seenCats = {}, seenIds = {};
@@ -864,6 +901,10 @@
             top:8px;  /* vertical nudge — raise/lower here */
             float:none !important; visibility:visible !important; opacity:1 !important;
             width:auto !important; height:auto !important; text-indent:0 !important; }
+        /* Shop / bazaar / item-market rows sit the name lower than the Items
+           page does, so the shared 8px nudge reads as far too low there.
+           Raise/lower the shop badges here -- more negative = higher. */
+        html.cit-sell .cit-badge { top:-1px !important; }
         .cit-c      { background:#b8860b; color:#fff; }
         .cit-oc     { background:#8b1a1a; color:#fff; }
         .cit-locked { background:#4a4a4a; color:#bbb; }
@@ -887,18 +928,7 @@
         #cit-banner .cit-recopy { color:#fff; text-decoration:underline; cursor:pointer;
             margin-left:4px; }
 
-        /* The armoury row to act on. The row's own background sits BEHIND its
-           cells, which are opaque, so the cells have to be tinted too. */
-        .cit-row-hit,
-        .cit-row-hit > *,
-        .cit-row-hit > * > * {
-            background-color:rgba(212,160,23,.30) !important;
-            transition:background-color .25s ease;
-        }
-        .cit-row-hit {
-            box-shadow:inset 0 0 0 2px #d4a017, 0 0 12px rgba(212,160,23,.5) !important;
-            border-radius:3px;
-        }
+
 
         /* Right-edge button, same idiom as the HT / FF tabs. */
         #cit-tip { position:fixed; display:none; z-index:2147483600; max-width:330px;
@@ -1110,8 +1140,10 @@
                 `<div class="cit-tip-p cit-tip-dim">${esc(m.label)}` +
                 (m.userId ? ` \u2014 ${loanLink(live.itemId, live.itemName, m.userId)}` : '') +
                 `</div>`).join('');
+            body += armouryLine(live.itemId, live.missing);
             body += `<div class="cit-tip-p cit-tip-dim" style="margin-top:4px">` +
-                    `Click a name to open the armoury with that loan set up.</div>`;
+                    `Click a name to jump to that item in the armoury, with ` +
+                    `"Name [id]" copied ready to paste.</div>`;
         } else if (live.missing) {
             body += `<div class="cit-tip-warn">You are the only one missing this.</div>`;
         } else {
@@ -1163,7 +1195,9 @@
         row.querySelector('.name-wrap .name') ||
         row.querySelector('[class*="name___"]') ||
         row.querySelector('.title-wrap .name') ||
-        row.querySelector('.name');
+        row.querySelector('.name') ||
+        row.querySelector('[class*="itemName"]') ||
+        row.querySelector('[class*="title"]');
 
     const cleanName = raw => raw.replace(/\s*x\s*[\d,]+\s*$/i, '').replace(/\s+/g, ' ').trim();
 
@@ -1177,17 +1211,45 @@
        the first x72" lands before the name. Appending to .name-wrap puts the
        badge after the name and both quantity spans, which is what we want. */
     function placeBadge(row, nameEl, frag) {
-        const wrap = row.querySelector('.name-wrap')
-                  || (nameEl && nameEl.parentElement)
-                  || nameEl;
-        wrap.appendChild(frag);
+        /* Items page: .name-wrap clears both quantity spans.
+           Sell list: same duplicate-quantity trick, so insert after the LAST
+           .count -- that puts the badge between "x4" and the value. */
+        const wrap = row.querySelector('.name-wrap');
+        if (wrap) { wrap.appendChild(frag); return; }
+
+        const counts = row.querySelectorAll('.count');
+        if (counts.length) {
+            const last = counts[counts.length - 1];
+            if (last.parentNode) { last.parentNode.insertBefore(frag, last.nextSibling); return; }
+        }
+        nameEl.appendChild(frag);
     }
 
     function rowItemId(row) {
-        return row.getAttribute('data-item')
+        const direct = row.getAttribute('data-item')
             || row.dataset.item
             || (row.querySelector('[data-item]') && row.querySelector('[data-item]').getAttribute('data-item'))
-            || null;
+            || (row.querySelector('[data-itemid]') && row.querySelector('[data-itemid]').getAttribute('data-itemid'))
+            || row.getAttribute('itemid')
+            || (row.querySelector('[itemid]') && row.querySelector('[itemid]').getAttribute('itemid'));
+        if (direct) return direct;
+
+        /* Shops and the armoury carry no data-item, but every item image is
+           served from .../images/items/<id>/... -- the path can be relative, so
+           do not anchor the match on a leading slash. */
+        const img = row.querySelector('img[src*="items/"]');
+        if (img) {
+            const m = /items\/(\d+)\//.exec(img.getAttribute('src') || '');
+            if (m) return m[1];
+        }
+
+        /* Sell-list rows carry no id at all, so fall back to the name. */
+        const nmEl = findNameEl(row);
+        if (nmEl) {
+            const id = idForName(cleanName(nmEl.textContent || ''));
+            if (id) return id;
+        }
+        return null;
     }
 
     function processRow(row) {
@@ -1199,7 +1261,8 @@
         const id = rowItemId(row);
         const live = ocFor(id);
         const def  = ocDefFor(id);
-        const stamp = [name, id, S.showC, S.showOC, live && live.total + ':' + live.mine + ':' + live.missing,
+        const stamp = [name, id, S.showC, S.showOC, S.dim, S.dimTagged,
+                       live && live.total + ':' + live.mine + ':' + live.missing,
                        def && def.uses.length, qtyOf(id)].join('|');
         if (row.dataset.citSig === stamp) return;
         row.querySelectorAll('[data-cit="1"]').forEach(n => n.remove());
@@ -1207,7 +1270,16 @@
         row.classList.remove('cit-dimmed', 'cit-alert');
 
         const t = tagsFor(id, name);
-        if (!t && !live && !def) { if (S.dim) row.classList.add('cit-dimmed'); return; }
+
+        /* Two dimming switches, each scoped to the page it makes sense on.
+           Items page: dim what no Crime or OC needs, so the useful stock stands
+           out. Shop / bazaar / item market: dim what a Crime or OC DOES need,
+           so what stays bright is safe to sell. */
+        if (!t && !live && !def) {
+            if (S.dim && !ON_SELL) row.classList.add('cit-dimmed');
+            return;
+        }
+        if (S.dimTagged && ON_SELL) row.classList.add('cit-dimmed');
 
         /* Prefer the API inventory (covers every item), but fall back to the
            row's own data-qty so quantities still show when the API is down. */
@@ -1255,15 +1327,41 @@
         placeBadge(row, nameEl, frag);
     }
 
-    /* Confirmed markup: rows are li[data-item][data-qty] inside ul.items-cont. */
-    const ROW_SEL = ['li[data-item]', 'ul.items-cont > li', 'ul[class*="items-cont"] > li'].join(',');
+    /* Your items: li[data-item][data-qty] inside ul.items-cont.
+       Shops: no data-item, so fall back to "has an item image and a name". */
+    const ROW_SEL = ['li[data-item]', 'ul.items-cont > li', 'ul[class*="items-cont"] > li',
+                     'ul[class*="itemsList"] > li', 'li[class*="item"]'].join(',');
 
     function isItemRow(li) {
         if (li.classList.contains('menu-item-link')) return false;
-        return li.hasAttribute('data-item') || !!li.querySelector('.name-wrap');
+        /* Positive signals FIRST -- an inventory row is an inventory row no
+           matter what wraps it. The old guard used [class*="sidebar"], which
+           also matches <body class="... with-sidebar ...">, so closest() hit on
+           every row on every page and silently stripped the Items-page badges. */
+        if (li.hasAttribute('data-item')) return true;
+        if (li.querySelector('.name-wrap')) return true;
+        if (li.closest('#sidebar, [id*="sidebar"], nav, header')) return false;
+        return !!(li.querySelector('img[src*="items/"]') && findNameEl(li));
     }
 
-    const rows = () => Array.prototype.filter.call(document.querySelectorAll(ROW_SEL), isItemRow);
+    /* On a shop page we tag the SELL list -- those are your own items, and
+       knowing an item is needed for a crime is what stops you selling it. The
+       buy grid is deliberately left alone: its tiles have no room for a badge
+       and it is not what the tagging is for.
+
+         ul.sell-items-list > li > ul.item > li.desc
+             span.count "x4" · span.name "Advent Calendar" · span.count "x4"   */
+    function sellListRows() {
+        return Array.prototype.slice.call(
+            document.querySelectorAll('ul.sell-items-list > li'))
+            .filter(findNameEl);
+    }
+
+    const rows = () => {
+        const base = Array.prototype.filter.call(document.querySelectorAll(ROW_SEL), isItemRow);
+        sellListRows().forEach(r => { if (base.indexOf(r) === -1) base.push(r); });
+        return base;
+    };
 
     let pending = null;
     function refresh(force) {
@@ -1290,35 +1388,154 @@
         ? `<span class="bad">failed</span> <span class="muted">— ${esc(DATA.errors[k])}</span>`
         : '<span class="muted">not loaded</span>';
 
+    /* OC Manager: every position across the faction's organized crimes whose
+       member is missing the required item.
+
+       This cannot come from the API -- faction selections need faction API
+       access, which most members do not have (the armoury hits the same wall).
+       So it is read from the faction's own Crimes tab when the user visits it,
+       exactly like the armoury, and cached with a timestamp. */
+    function ocManagerView() {
+        if (!DATA.facOC || !Array.isArray(DATA.facOC.crimes) || !DATA.facOC.crimes.length) {
+            return {
+                summary: 'no data yet',
+                html: '<div class="muted">Open your faction\'s <b>Crimes</b> tab once. Every ' +
+                      'organized crime is read from that page, including which positions are ' +
+                      'short of their item. The faction API would give this directly, but ' +
+                      'those selections need faction API access.</div>'
+            };
+        }
+
+        /* One armoury pool serves every crime, so track demand globally as well
+           as per crime -- 1 needed here can still be unmeetable if four other
+           crimes want the same item. */
+        const globalNeed = {};
+        DATA.facOC.crimes.forEach(c => (c.slots || []).forEach(sl => {
+            if (sl.missing && sl.itemId) {
+                globalNeed[sl.itemId] = (globalNeed[sl.itemId] || 0) + 1;
+            }
+        }));
+
+        let shortTotal = 0;
+        const blocks = DATA.facOC.crimes.map(c => {
+            const short = (c.slots || []).filter(sl => sl.missing);
+            shortTotal += short.length;
+            const key = 'mgr:' + c.name;
+
+            if (!short.length) {
+                return `<details class="cit-crime" data-sec="${esc(key)}">` +
+                       `<summary>${esc(c.name)} <span class="ok">all covered</span>` +
+                       `${c.timer ? ` <span class="cit-sum-note">${esc(c.timer)}</span>` : ''}` +
+                       `</summary><div class="muted">Every position has its item.</div></details>`;
+            }
+
+            const names = short.map(sl => {
+                const who = sl.userId
+                    ? (sl.itemId
+                        ? loanLink(sl.itemId, sl.itemName, sl.userId, sl.userName)
+                        : `<a class="cit-tip-who" href="https://www.torn.com/profiles.php?XID=${sl.userId}"` +
+                          ` target="_blank" rel="noopener">` +
+                          `${esc(sl.userName || ('ID ' + sl.userId))}</a>`)
+                    : '<span class="muted">empty position</span>';
+                return `<div class="bad">${esc(sl.itemName || 'item unknown')} \u2014 ` +
+                       `${esc(sl.label)}: ${who}</div>`;
+            }).join('');
+
+            /* One armoury line per distinct item this crime is short of. */
+            let stock = '';
+            if (DATA.armoury) {
+                const byItem = {};
+                short.forEach(sl => {
+                    const id = sl.itemId || ('?' + (sl.itemName || ''));
+                    byItem[id] = byItem[id] || { n: sl.itemName, id: sl.itemId, need: 0 };
+                    byItem[id].need++;
+                });
+                stock = Object.keys(byItem).map(id => {
+                    const e = byItem[id];
+                    const a = e.id ? armouryOf(e.id) : null;
+                    const avail = a ? a.avail : 0;
+                    const nm = e.n || 'item';
+                    const elsewhere = (globalNeed[e.id] || 0) - e.need;
+                    const also = elsewhere > 0
+                        ? ` <span class="muted">\u00B7 ${elsewhere} more needed in other crimes</span>`
+                        : '';
+                    const style = 'margin:2px 0 4px 10px';
+                    if (!avail) {
+                        return `<div class="bad" style="${style}">Armoury - no ${esc(nm)} ` +
+                               `available, ${e.need} needed${also}</div>`;
+                    }
+                    if (avail < e.need) {
+                        return `<div class="bad" style="${style}">Armoury - ${avail} ${esc(nm)} ` +
+                               `available, ${e.need} needed (${e.need - avail} short)${also}</div>`;
+                    }
+                    return `<div class="ok" style="${style}">Armoury - ${avail} ${esc(nm)} ` +
+                           `available${also}</div>`;
+                }).join('');
+            }
+
+            return `<details class="cit-crime" data-sec="${esc(key)}"` +
+                   `${secOpen(key) ? ' open' : ''}>` +
+                   `<summary>${esc(c.name)} ` +
+                   `<span class="bad">${short.length} short</span>` +
+                   `${c.timer ? ` <span class="cit-sum-note">${esc(c.timer)}</span>` : ''}` +
+                   `</summary>${names}${stock}</details>`;
+        }).join('');
+
+        return {
+            summary: `${shortTotal} short across ${DATA.facOC.crimes.length} crimes ` +
+                     `\u00B7 ${fmtAgo(DATA.facOC.ts)}`,
+            html: blocks
+        };
+    }
+
     function openPanel() {
         document.getElementById('cit-panel')?.remove();
         const p = document.createElement('div');
         p.id = 'cit-panel';
 
         const cc = crimeCoverage();
+        const mgr = S.ocMgr ? ocManagerView() : { summary: '', html: '' };
         const oc = DATA.oc;
         const nameOfId = id => (DATA.catalogue && DATA.catalogue[id]) || ('item ' + id);
         let ocHtml = '<div class="muted">Not in an OC, or feed unavailable.</div>';
         if (oc && DATA.ocIndex) {
             const rowsHtml = Object.keys(DATA.ocIndex).map(id => {
-                const e = DATA.ocIndex[id];
-                const have = qtyOf(id);
-                const cls = e.mine && !e.myAvailable ? 'bad' : e.missing ? 'bad' : 'ok';
-                const others = e.missingSlots || [];
+                const e      = DATA.ocIndex[id];
+                const nm     = nameOfId(id);
+                const others = e.missingSlots || [];     // teammates only; you are named above
+                const need   = e.missing || 0;           // every position short, you included
+
+                if (!need) return `<div class="ok">${esc(nm)} \u2014 everyone has it</div>`;
+
+                /* What people act on is who is short, so lead with that. The
+                   quantity and your own slot are already stated above. */
                 const who = others.length
-                    ? `<div class="muted" style="margin:1px 0 4px 10px">` +
+                    ? `<div class="muted" style="margin:1px 0 2px 10px">` +
                       others.map(m => `${esc(m.label)}: ` +
-                        (m.userId ? loanLink(id, nameOfId(id), m.userId) : '?')).join('<br>') +
+                          (m.userId ? loanLink(id, nm, m.userId) : '?')).join('<br>') +
                       `</div>`
                     : '';
-                return `<div class="${cls}">${nameOfId(id)} ×${e.total}` +
-                       `${e.mine ? ' <b>(your slot: ' + e.mySlot + ')</b>' : ''}` +
-                       ` — ${others.length
-                              ? others.length + ' teammate' + (others.length > 1 ? 's' : '') + ' without it'
-                              : 'everyone else has it'}` +
-                       `${have === null ? '' : (have > 0 ? ` · you hold ${have}` : ' · <b>you have none</b>')}` +
-                       `</div>${who}`;
+
+                let arm = '';
+                if (DATA.armoury) {
+                    const a = armouryOf(id);
+                    const avail = a ? a.avail : 0;
+                    const style = 'margin:0 0 4px 10px';
+                    if (!avail) {
+                        arm = `<div class="bad" style="${style}">Armoury - no ${esc(nm)} ` +
+                              `available, ${need} needed</div>`;
+                    } else if (avail < need) {
+                        arm = `<div class="bad" style="${style}">Armoury - ${avail} ${esc(nm)} ` +
+                              `available, ${need} needed (${need - avail} short)</div>`;
+                    } else {
+                        arm = `<div class="ok" style="${style}">Armoury - ${avail} ${esc(nm)} ` +
+                              `available</div>`;
+                    }
+                }
+
+                return `<div class="bad">${esc(nm)}</div>${who}${arm}`;
             }).join('');
+
             const mine = myMissingItems();
             const warn = mine.length
                 ? `<div class="bad" style="margin:4px 0 6px"><b>\u26A0 You are missing: ` +
@@ -1330,7 +1547,8 @@
         }
 
         const ocSummary = oc
-            ? `${esc(oc.name)} \u00B7 ${fmtLeft(oc.ready_at)}`
+            ? `${esc(oc.name)} \u00B7 ${fmtLeft(oc.ready_at)}` +
+              (DATA.ocReadAt ? ` \u00B7 read ${fmtAgo(DATA.ocReadAt)}` : '')
             : 'not in one';
 
         /* Coverage across every OC in the game, from the authoritative defs. */
@@ -1346,13 +1564,30 @@
             });
             missing.sort((a, b) => b.e.uses.length - a.e.uses.length);
             covSummary = `${held.length} of ${held.length + missing.length} held`;
+            held.sort((a, b) => b.e.uses.length - a.e.uses.length);
             covHtml =
                 `<div class="ok">You hold ${held.length} of ${held.length + missing.length} OC items.</div>` +
-                `<div class="bad" style="margin-top:6px">Missing (${missing.length}), most-used first:</div>` +
-                `<div class="muted">` + missing.slice(0, 25).map(m =>
-                    `${m.e.name} — ${m.e.uses.length} slot(s), ${m.e.crimes.length} crime(s)` +
-                    `${m.e.consumed ? ' · consumed' : ''}`
-                ).join('<br>') + (missing.length > 25 ? `<br>…and ${missing.length - 25} more` : '') + `</div>`;
+                `<details class="cit-crime" data-sec="occov-missing"` +
+                `${secOpen('occov-missing') ? ' open' : ''}>` +
+                `<summary><span class="bad">Missing</span> ` +
+                `<span class="cit-sum-note">${missing.length}, most-used first</span></summary>` +
+                /* No cap -- the section collapses, so the full list costs nothing
+                   when closed and is what you actually want when open. */
+                `<div class="muted">` + missing.map(m =>
+                    `${esc(m.e.name)} \u2014 ${m.e.uses.length} position` +
+                    `${m.e.uses.length > 1 ? 's' : ''}, ${m.e.crimes.length} crime` +
+                    `${m.e.crimes.length > 1 ? 's' : ''}` +
+                    `${m.e.consumed ? ' \u00B7 consumed' : ''}`
+                ).join('<br>') + `</div></details>` +
+                `<details class="cit-crime" data-sec="occov-held"` +
+                `${secOpen('occov-held') ? ' open' : ''}>` +
+                `<summary><span class="ok">Held</span> ` +
+                `<span class="cit-sum-note">${held.length}</span></summary>` +
+                `<div class="muted">` + (held.map(m =>
+                    `${esc(m.e.name)} \u00D7${m.have} \u2014 ${m.e.uses.length} position` +
+                    `${m.e.uses.length > 1 ? 's' : ''}, ${m.e.crimes.length} crime` +
+                    `${m.e.crimes.length > 1 ? 's' : ''}`
+                ).join('<br>') || '\u2014') + `</div></details>`;
         }
 
         p.innerHTML = `
@@ -1370,8 +1605,10 @@
             <h4>Display</h4>
             <label><input type="checkbox" id="cit-c" ${S.showC ? 'checked' : ''}> Show [C] badges</label>
             <label><input type="checkbox" id="cit-oc" ${S.showOC ? 'checked' : ''}> Show [OC] badges</label>
-            <label><input type="checkbox" id="cit-dim" ${S.dim ? 'checked' : ''}> Dim untagged items</label>
-            <label><input type="checkbox" id="cit-api" ${S.useApi ? 'checked' : ''}> Use API enrichment</label>
+            <label title="In a Torn NPC shop, bazaar or the item market, greys out the items a Crime or an OC needs, so what stays bright is safe to sell."><input type="checkbox" id="cit-dimtag" ${S.dimTagged ? 'checked' : ''}> Dim Crime &amp; OC Items in Torn NPC Shops page</label>
+            <label title="Master switch for every call to Torn's API. Off: the script still tags every item from its built-in data and reads quantities from your item pages, but live OC status, teammate names and the item catalogue stop."><input type="checkbox" id="cit-api" ${S.useApi ? 'checked' : ''}> Live OC data (Torn API)</label>
+            <label><input type="checkbox" id="cit-ocmgr" ${S.ocMgr ? 'checked' : ''}> OC Manager</label>
+            <label title="On your own Items page, greys out everything that is NOT used by a Crime or an OC."><input type="checkbox" id="cit-dim" ${S.dim ? 'checked' : ''}> Dim non crime &amp; non OC items in Items page</label>
 
             <h4>Status</h4>
             ${LOADING ? '<div class="muted">Refreshing from the Torn API…</div>' : ''}
@@ -1389,7 +1626,7 @@
                 : (DATA.domInv && Object.keys(DATA.domInv).length
                     ? `<span class="ok">${Object.keys(DATA.domInv).length} stacks (from pages browsed)</span>`
                     : errHtml('inventory'))}</div>
-            ${DATA.inventory ? '' : '<div class="muted" style="font-size:11px">Torn\'s inventory API returns nothing, so quantities are collected from item pages as you open each category tab.</div>'}
+            ${DATA.inventory ? '' : '<div class="muted" style="font-size:11px">Torn retired the inventory API, so quantities are read from your item pages as you open each category tab.</div>'}
 
             <div>OC definitions: ${DATA.ocDefs
                 ? `<span class="ok">${DATA.ocDefs.length} crimes, ${Object.keys(DATA.ocDefIndex || {}).length} items</span>`
@@ -1400,6 +1637,12 @@
               ${ocHtml}
             </details>
 
+            ${DATA.armoury
+                ? `<div class="muted" style="font-size:11px;margin-top:4px">Armoury stock as of ` +
+                  `${fmtAgo(DATA.armoury.ts)} (${Object.keys(DATA.armoury.items).length} items seen)</div>`
+                : `<div class="muted" style="font-size:11px;margin-top:4px">Armoury stock not read yet ` +
+                  `\u2014 open your faction armoury once.</div>`}
+
             <details data-sec="occov" ${secOpen('occov') ? 'open' : ''}>
               <summary>Organized Crime item coverage <span class="cit-sum-note">${covSummary}</span></summary>
               ${covHtml}
@@ -1409,6 +1652,12 @@
               <summary>Crime item coverage <span class="cit-sum-note">${cc.summary}</span></summary>
               ${cc.html}
             </details>
+
+            ${S.ocMgr ? `
+            <details data-sec="ocmgr" ${secOpen('ocmgr') ? 'open' : ''}>
+              <summary>OC Manager <span class="cit-sum-note">${mgr.summary}</span></summary>
+              ${mgr.html}
+            </details>` : ''}
         `;
         document.body.appendChild(p);
 
@@ -1432,6 +1681,7 @@
             const rs = rows();
             LOG('=== DIAGNOSTICS v' + VERSION + ' ===');
             LOG('raw selector hits:', document.querySelectorAll(ROW_SEL).length,
+                '| sell-list rows:', document.querySelectorAll('ul.sell-items-list > li').length,
                 '| item rows after filtering:', rs.length);
             LOG('errors:', JSON.parse(JSON.stringify(DATA.errors)));
             LOG('catalogue:', DATA.catalogue ? Object.keys(DATA.catalogue).length : null,
@@ -1457,7 +1707,10 @@
         const bind = (sel, prop) => {
             p.querySelector(sel).onchange = e => { S[prop] = e.target.checked; refresh(true); };
         };
-        bind('#cit-c', 'showC'); bind('#cit-oc', 'showOC'); bind('#cit-dim', 'dim'); bind('#cit-api', 'useApi');
+        bind('#cit-c', 'showC'); bind('#cit-oc', 'showOC'); bind('#cit-dim', 'dim');
+        bind('#cit-dimtag', 'dimTagged');
+        bind('#cit-api', 'useApi');
+        p.querySelector('#cit-ocmgr').onchange = e => { S.ocMgr = e.target.checked; repaintPanel(); };
     }
 
     try {
@@ -1544,7 +1797,268 @@
     const ON_FACTIONS = /\/factions\.php/.test(location.pathname);
     /* Badges only make sense where item rows exist; the tab and panel are
        available on every Torn page. */
-    const ON_ITEMS = /\/(item|items|bazaar|imarket)\.php/.test(location.pathname);
+    const ON_ITEMS = /\/(item|items|bazaar|imarket|shops)\.php/.test(location.pathname);
+    /* Pages whose lists are things you are putting up for sale. */
+    const ON_SELL  = /\/(shops|bazaar|imarket)\.php/.test(location.pathname);
+    if (ON_SELL) document.documentElement.classList.add('cit-sell');
+
+    /* CONFIRMED armoury markup (faction armoury, ul.item-list > li):
+         <li>
+           <div class="img-wrap" data-armoryid="..." data-itemid="1331"> <img ...>
+           <div class="name bold t-overflow">Hand Drill x<span class="qty">48</span></div>
+           <div class="type">Tool</div>
+           <div class="loaned t-overflow"><span class="t-show bold">Loaned:</span> Available</div>
+           <div class="item-action">
+             <div class="give" data-role="give">Give</div>
+             <a class="loan active" data-role="loan">Loan</a>
+             <div class="retrieve" data-role="retrieve">Retrieve</div>
+           </div>
+           <form> ... loan-cont with the quantity + member inputs ... </form>
+         </li>
+       Note the image src is RELATIVE ("images/items/..."), which is why an
+       img[src*="/images/items/"] selector found nothing. We use data-itemid
+       instead, so no text or image matching is needed anywhere. */
+
+    const armouryRows = () => document.querySelectorAll('ul.item-list > li');
+
+    const armRowItemId = li => {
+        const w = li.querySelector('[data-itemid]');
+        return w ? w.getAttribute('data-itemid') : null;
+    };
+
+    const armRowQty = li => {
+        const q = li.querySelector('.name .qty');
+        const n = q ? parseInt((q.textContent || '').replace(/[^\d]/g, ''), 10) : NaN;
+        return isNaN(n) ? 1 : n;                       // no .qty means a single item
+    };
+
+    const armRowName = li => {
+        const n = li.querySelector('.name');
+        if (!n) return '';
+        return (n.textContent || '').replace(/\s*x\s*[\d,]*\s*$/, '').trim();
+    };
+
+    /* The Loaned cell is either the plain word "Available" or the borrower as a
+       link, so a member called "Available" cannot be mistaken for the pool. */
+    const armRowAvailable = li => {
+        const l = li.querySelector('.loaned');
+        if (!l || l.querySelector('a')) return false;
+        const t = (l.textContent || '').replace(/Loaned:/i, '').replace(/\s+/g, ' ').trim();
+        return t === 'Available';
+    };
+
+    const armRowLoanLink = li => li.querySelector('a.loan[data-role="loan"]');
+
+    /* The faction armoury is NOT reachable with a personal key -- faction
+       selections need faction API access (error 7 without it). So we read it off
+       the page whenever the user is there and cache what we saw, the same way
+       item quantities are collected from item tabs. */
+    /* ---- Faction OC page harvest -------------------------------------
+       CONFIRMED markup on the faction Crimes tab (classes are hashed, so match
+       on prefixes):
+
+         p[class^=panelTitle]                         crime name
+         [class^=slotHeader]                          one position
+           [class^=slotIcon] > svg                    ITEM MISSING (red no-entry)
+           [class^=slotIcon] > div[class^=planning]   item present (clock)
+           span[class^=title___]                      role, e.g. "Muscle #3"
+           [class^=successChance]                     success %
+         a[href*="XID="]                              member id
+         span.honor-text                              member name
+
+       The faction API cannot give us this (error 7 without faction API access),
+       so it is read off the page and cached, like the armoury. */
+
+    function loadFacOC() {
+        try {
+            const raw = getV('cit_facoc', null);
+            DATA.facOC = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+            /* Caches written before item ids were recorded cannot build loan
+               links, so drop them rather than degrade silently. */
+            if (DATA.facOC && Array.isArray(DATA.facOC.crimes)) {
+                const anySlot = DATA.facOC.crimes
+                    .reduce((a, c) => a.concat(c.slots || []), [])
+                    .filter(sl => sl.missing)[0];
+                if (anySlot && anySlot.itemId === undefined) DATA.facOC = null;
+            }
+        } catch (e) { DATA.facOC = null; }
+        return DATA.facOC;
+    }
+
+    /* Which item a position needs, from the authoritative API definitions. */
+    function defItemFor(crimeName, label) {
+        if (!Array.isArray(DATA.ocDefs)) return null;
+        const c = DATA.ocDefs.find(x => x.name === crimeName);
+        if (!c) return null;
+        const sl = (c.slots || []).find(x =>
+            ((x.position_info && x.position_info.label) || x.name) === label);
+        if (!sl || !sl.required_item) return null;
+        return { id: sl.required_item.id, name: sl.required_item.name };
+    }
+
+    function harvestFacOC() {
+        if (!visible()) return false;   // never read a tab you are not looking at
+        const titles = document.querySelectorAll('p[class*="panelTitle"]');
+        if (!titles.length) return false;
+
+        const crimes = [];
+        Array.prototype.forEach.call(titles, t => {
+            let card = t;
+            for (let i = 0; i < 6 && card.parentElement; i++) {
+                card = card.parentElement;
+                if (card.querySelector('[class*="slotHeader"]')) break;
+            }
+            if (!card || !card.querySelector('[class*="slotHeader"]')) return;
+
+            const name = (t.textContent || '').trim();
+            const timerEl = Array.prototype.find.call(card.querySelectorAll('span'),
+                e => /^\d{2}:\d{2}:\d{2}:\d{2}$/.test((e.textContent || '').trim()));
+
+            const slots = [];
+            card.querySelectorAll('[class*="slotHeader"]').forEach(h => {
+                const wrap  = h.parentElement;
+                const label = ((h.querySelector('[class*="title___"]') || {}).textContent || '').trim();
+                const icon  = h.querySelector('[class*="slotIcon"]');
+
+                /* An svg in the slot icon is the red no-entry mark: that member
+                   does not have the item. A planning___ div is the clock, which
+                   means they do. */
+                const missing = !!(icon && icon.querySelector('svg'));
+
+                const link = wrap.querySelector('a[href*="XID="]');
+                const uid  = link ? ((link.getAttribute('href') || '').match(/XID=(\d+)/) || [])[1] : null;
+                const nmEl = wrap.querySelector('span.honor-text:not(.honor-text-svg)');
+                const uname = nmEl ? (nmEl.textContent || '').trim()
+                                   : ((wrap.querySelector('img[alt]') || {}).alt || '').trim();
+
+                if (!label) return;
+                const req = defItemFor(name, label);
+                slots.push({ label, userId: uid || null, userName: uname || null,
+                             missing,
+                             itemId:   req ? req.id : null,
+                             itemName: req ? req.name : null });
+            });
+
+            if (slots.length) {
+                crimes.push({ name, timer: timerEl ? (timerEl.textContent || '').trim() : '', slots });
+            }
+        });
+
+        LOG('faction OC harvest: titles', titles.length, '| crimes', crimes.length,
+            '| positions short', crimes.reduce((n, c) => n + c.slots.filter(x => x.missing).length, 0));
+
+        if (!crimes.length) return false;
+        DATA.facOC = { ts: Date.now(), crimes };
+        try { setV('cit_facoc', JSON.stringify(DATA.facOC)); } catch (e) {}
+        repaintPanel();
+        return true;
+    }
+
+    function loadArmoury() {
+        try {
+            const raw = getV('cit_armoury', null);
+            DATA.armoury = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+        } catch (e) { DATA.armoury = null; }
+        return DATA.armoury;
+    }
+
+    function harvestArmoury() {
+        if (!visible()) return false;   // never read a tab you are not looking at
+        const rows = armouryRows();
+        const found = {};
+        let accepted = 0;
+
+        Array.prototype.forEach.call(rows, li => {
+            const id = armRowItemId(li);
+            if (!id) return;
+            const e = found[id] || (found[id] = { n: armRowName(li), avail: 0, loaned: 0 });
+            if (armRowAvailable(li)) e.avail += armRowQty(li); else e.loaned += armRowQty(li);
+            accepted++;
+        });
+
+        LOG('armoury harvest: rows', rows.length,
+            '| accepted', accepted, '| distinct items', Object.keys(found).length);
+
+        if (!accepted) return false;
+
+        DATA.armoury = { ts: Date.now(), items: found };
+        try { setV('cit_armoury', JSON.stringify(DATA.armoury)); } catch (e) {}
+        repaintPanel();          // the panel may have rendered before this ran
+        return true;
+    }
+
+    /* The pooled, un-loaned row for a given item id. */
+    function findArmouryRow(itemId) {
+        const hit = Array.prototype.filter.call(armouryRows(),
+            li => armRowItemId(li) === String(itemId) && armRowAvailable(li) && armRowLoanLink(li));
+        LOG('armoury helper: available rows for item', itemId, '=', hit.length);
+        return hit[0] || null;
+    }
+
+    /* Inline styles, not a class: the row's own background sits behind its
+       cells, and nothing on the page can out-specify this. */
+    function highlightRow(li, ms) {
+        const prev = li.getAttribute('style') || '';
+        const kids = Array.prototype.slice.call(li.children);
+        const kidPrev = kids.map(k => k.getAttribute('style') || '');
+
+        li.setAttribute('style', prev +
+            ';outline:2px solid #d4a017 !important;outline-offset:-2px' +
+            ';background:rgba(212,160,23,.28) !important' +
+            ';box-shadow:0 0 14px rgba(212,160,23,.65) !important' +
+            ';border-radius:3px;transition:background .2s');
+        /* Let the row colour show through the opaque cells. */
+        kids.forEach((k, n) => k.setAttribute('style',
+            kidPrev[n] + ';background-color:transparent !important'));
+
+        setTimeout(() => {
+            li.setAttribute('style', prev);
+            kids.forEach((k, n) => {
+                if (kidPrev[n]) k.setAttribute('style', kidPrev[n]);
+                else k.removeAttribute('style');
+            });
+        }, ms || 8000);
+    }
+
+    const armouryOf = id =>
+        (DATA.armoury && DATA.armoury.items && DATA.armoury.items[id]) || null;
+
+    const fmtAgo = ts => {
+        const sec = Math.max(0, (Date.now() - ts) / 1000);
+        if (sec < 90) return 'just now';
+        const m = Math.floor(sec / 60);
+        if (m < 60) return m + 'm ago';
+        const h = Math.floor(m / 60);
+        if (h < 48) return h + 'h ago';
+        return Math.floor(h / 24) + 'd ago';
+    };
+
+    /* One line about what the faction pool holds, so a loan link that cannot
+       work says so instead of sending the user to an empty armoury. */
+    /* `need` is how many positions are short of this item -- everyone who is
+       missing it, the user included, since they all draw on the same pool. */
+    /* `need` is how many positions are short of this item -- everyone missing it,
+       the user included, since they all draw on the same pool. */
+    function armouryLine(itemId, need) {
+        if (!DATA.armoury) {
+            return `<div class="cit-tip-dim">Armoury stock unknown \u2014 ` +
+                   `open the faction armoury once and it will be remembered.</div>`;
+        }
+        const a = armouryOf(itemId);
+        const nm = (a && a.n) || (DATA.catalogue && DATA.catalogue[itemId]) || 'item';
+        const when = fmtAgo(DATA.armoury.ts);
+        const avail = a ? a.avail : 0;
+
+        if (!avail) {
+            return `<div class="cit-tip-warn">Armoury - no ${esc(nm)} available` +
+                   `${need ? `, ${need} needed` : ''} (${when})</div>`;
+        }
+        if (need && avail < need) {
+            return `<div class="cit-tip-warn">Armoury - ${avail} ${esc(nm)} available, ` +
+                   `${need} needed (<b>${need - avail} short</b>) (${when})</div>`;
+        }
+        return `<div class="cit-tip-ok">Armoury - ${avail} ${esc(nm)} available (${when})</div>`;
+    }
 
     function copyText(text) {
         try { GM_setClipboard(text, 'text'); return true; } catch (e) {}
@@ -1571,74 +2085,6 @@
         return b;
     }
 
-    /* The row action is "Loan"; the form's submit button is "LOAN". Case is what
-       separates them. Any tag can carry the text -- Torn uses a span here. */
-    const LOAN_TAGS = 'a, button, span, div, td, li';
-
-    function loanControlIn(root) {
-        return Array.prototype.find.call(root.querySelectorAll(LOAN_TAGS), el => {
-            if (el.querySelector(LOAN_TAGS)) return false;          // innermost only
-            return (el.textContent || '').trim() === 'Loan';        // exact case
-        }) || null;
-    }
-
-    /* Count non-overlapping occurrences, to reject containers spanning several
-       rows of the same item. */
-    function countOf(hay, needle) {
-        let n = 0, i = 0;
-        while ((i = hay.indexOf(needle, i)) !== -1) { n++; i += needle.length; }
-        return n;
-    }
-
-    /* Exactly one row, and its Loaned column must read Available.
-       The armoury lists the same item several times -- one pooled row plus one
-       per member it is out on loan to -- so the item name appearing twice means
-       we have grabbed a container spanning rows, not a row. */
-    function findArmouryRow(itemName) {
-        const cands = [];
-        document.querySelectorAll('li, tr, div, td').forEach(el => {
-            const t = (el.textContent || '').trim();
-            if (t.length > 200) return;
-            if (countOf(t, itemName) !== 1) return;                  // exactly one row
-            if (/Please select quantity/i.test(t)) return;            // the open form
-            if (!loanControlIn(el)) return;
-
-            /* The Loaned column is either the plain word "Available" or the
-               borrower's name as a link. A member could be called "Available",
-               so the text alone is not enough -- the cell must not be a link. */
-            const avail = Array.prototype.some.call(
-                el.querySelectorAll('td, span, div, li'),
-                c => {
-                    if (c.querySelector('td, span, div, li, a')) return false;  // leaf only
-                    if ((c.textContent || '').trim() !== 'Available') return false;
-                    if (c.tagName === 'A' || c.closest('a')) return false;      // a borrower
-                    if (c.getAttribute('href') || c.onclick) return false;
-                    return true;
-                });
-            if (!avail) return;
-
-            cands.push(el);
-        });
-        cands.sort((a, b) => a.querySelectorAll('*').length - b.querySelectorAll('*').length);
-        LOG('armoury helper: available-row candidates for', itemName, '=', cands.length);
-        return cands[0] || null;
-    }
-
-    /* If the row can't be found, dump the surrounding markup so it can be pinned
-       rather than guessed at. */
-    function dumpArmouryContext(itemName) {
-        const hit = Array.prototype.find.call(
-            document.querySelectorAll('li, tr, div, td'),
-            el => (el.textContent || '').indexOf(itemName) !== -1 &&
-                  !el.querySelector('li, tr, td') &&
-                  (el.textContent || '').length < 120);
-        if (!hit) { LOG('armoury helper: item name not present on this page'); return; }
-        let n = hit, up = 0;
-        while (n.parentElement && up < 4) { n = n.parentElement; up++; }
-        LOG('armoury helper: context around "' + itemName + '" (paste this):',
-            n.outerHTML.slice(0, 2000));
-    }
-
     function armouryAssist() {
         const raw = getV('cit_loan_intent', null);
         if (!raw) return;
@@ -1648,34 +2094,35 @@
 
         const who = it.userName ? `${it.userName} [${it.userId}]` : String(it.userId);
         const copied = copyText(who);
-
         const copyNote = copied
             ? `<b>${esc(who)}</b> is on your clipboard \u2014 paste it into the member box.`
             : `Member to loan to: <b>${esc(who)}</b> (copy it manually).`;
 
         const banner = loanBanner(
-            `Looking for <b>${esc(it.itemName)}</b>\u2026` +
+            `Looking for <b>${esc(it.itemName)}</b> in the armoury\u2026` +
             `<div class="cit-banner-sub">${copyNote}</div>`);
 
         let tries = 0;
         const timer = setInterval(() => {
-            if (++tries > 40) {                             // ~20s
+            const row = findArmouryRow(it.itemId);
+
+            if (!row) {
+                if (++tries <= 30) return;                  // ~15s, rows load late
                 clearInterval(timer);
-                loanBanner(`Could not find an available <b>${esc(it.itemName)}</b> row.` +
-                    `<div class="cit-banner-sub">${copyNote} Details in the console (F12).</div>`);
-                LOG('armoury helper: no available row for', it.itemName);
-                dumpArmouryContext(it.itemName);
+                const a = armouryOf(it.itemId);
+                const why = (a && !a.avail)
+                    ? `The armoury has none spare \u2014 all ${a.loaned} are out on loan.`
+                    : `It may be on another tab, or the faction has none.`;
+                loanBanner(`No spare <b>${esc(it.itemName)}</b> in the armoury.` +
+                    `<div class="cit-banner-sub">${why} ${copyNote}</div>`);
+                LOG('armoury helper: no available row for item', it.itemId, it.itemName);
                 return;
             }
-            const row = findArmouryRow(it.itemName);
-            if (!row) return;
-            clearInterval(timer);
 
-            row.classList.add('cit-row-hit');
+            clearInterval(timer);
             row.scrollIntoView({ block: 'center', behavior: 'smooth' });
-            setTimeout(() => row.classList.remove('cit-row-hit'), 3000);
-            LOG('armoury helper: highlighted row for', it.itemName, row.tagName +
-                '.' + String(row.className || '').replace('cit-row-hit', '').trim());
+            highlightRow(row, 8000);
+            LOG('armoury helper: highlighted', it.itemName, 'item', it.itemId);
 
             if (banner) banner.remove();
             const b2 = loanBanner(
@@ -1695,8 +2142,11 @@
        ================================================================== */
 
     async function bootstrap(force) {
+        if (!visible()) { whenVisible(() => bootstrap(force)); return; }
         DATA.errors = {};
         LOADING = true;
+        loadArmoury();
+        loadFacOC();
         setV('cit_banner_dismissed', null);   // no longer used; dismissal is per page view
         loadDomInv();
         /* No key is a supported mode: the built-in crime data still tags every
@@ -1719,6 +2169,13 @@
         await step('inventory', loadInventory);
         await step('ocdefs',    loadOcDefs);
         await step('self',      loadSelf);
+
+        /* Landing on the items or faction page is a deliberate action by the
+           user, and it is exactly when OC status matters -- they have just
+           picked something up, or are about to. Treat that navigation as the
+           trigger and take a fresh reading instead of serving a cached one that
+           can still claim their position is short. */
+        if (ON_ITEMS || ON_FACTIONS) setV('cit_cache_oc', null);
         await step('oc',        loadOwnOC);
         await step('names',     loadMemberNames);
 
@@ -1740,8 +2197,28 @@
         refresh(true);
     }
 
-    /* Only on the faction page: finish a loan started from a teammate's name. */
-    if (ON_FACTIONS) armouryAssist();
+    /* Only on the faction page: record what the armoury holds, and finish a loan
+       started from a teammate's name. */
+    if (ON_FACTIONS) {
+        /* Torn mutates this page constantly, so throttle hard: at most one
+           attempt per 1.5s, give up after 20 fruitless tries, and stop once a
+           harvest succeeds (a tab switch re-arms it). */
+        let armTimer = null, armTries = 0, armDone = false;
+        const scheduleHarvest = () => {
+            if (armTimer || armDone || armTries > 20) return;
+            armTimer = setTimeout(() => {
+                armTimer = null;
+                armTries++;
+                const a = harvestArmoury();
+                const f = harvestFacOC();
+                if (a || f) { armDone = true; armTries = 0; }
+            }, 1500);
+        };
+        new MutationObserver(() => { armDone = false; scheduleHarvest(); })
+            .observe(document.body, { childList: true, subtree: true });
+        scheduleHarvest();
+        armouryAssist();
+    }
 
     bootstrap(false);
 
