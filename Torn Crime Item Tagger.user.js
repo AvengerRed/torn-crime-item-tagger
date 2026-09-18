@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TORN Crime Item Tagger
 // @namespace    avengerred.torn
-// @version      2.37.0
+// @version      2.39.0
 // @description  Tags your inventory with [C] and [OC] badges showing which Crimes 2.0 and Organized Crimes each item is used for. Hover for the crimes, positions and whether the item is consumed. An optional Torn API key adds live status for the OC you are in, warns you when your own position is short an item, and helps you loan one to a teammate.
 // @author       AvengerRed
 // @license      MIT
@@ -55,7 +55,12 @@
 (function () {
     'use strict';
 
-    const VERSION = '2.37.0';
+    /* Single source of truth is the @version line in the metadata block above:
+       Greasy Fork only publishes an update when @version increases, so the panel
+       must never show a number that was bumped separately. GMforPDA supplies a
+       GM_info with an empty script object, hence the literal fallback. */
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version)
+                    || '2.37.0';
     /* Torn's rules forbid reading pages you are not actively viewing, and
        forbid requests that you did not trigger. So nothing runs while the tab is
        hidden: no DOM harvesting, no API calls. Work resumes when you look at the
@@ -290,7 +295,19 @@
         get ocMgr()      { return getV('cit_ocmgr', false); },
         set ocMgr(v)     { setV('cit_ocmgr', v); },
         get dimTagged()  { return getV('cit_dimTagged', false); },
-        set dimTagged(v) { setV('cit_dimTagged', v); }
+        set dimTagged(v) { setV('cit_dimTagged', v); },
+        /* Which pages the CIT tab appears on, as {pageKey: true}. Absent means
+           first run: honour the older hideTab flag if one was set, else show it
+           everywhere, which is how the tab has always behaved. */
+        get tabOn() {
+            const raw = getV('cit_tabon', null);
+            if (raw == null) return getV('cit_hideTab', false) ? {} : { everywhere: true };
+            try {
+                const o = typeof raw === 'string' ? JSON.parse(raw) : raw;
+                return (o && typeof o === 'object') ? o : { everywhere: true };
+            } catch (e) { return { everywhere: true }; }
+        },
+        set tabOn(v)     { setV('cit_tabon', JSON.stringify(v || {})); }
     };
 
     const TTL = { catalogue: 7 * 24 * 3600e3, ocDefs: 7 * 24 * 3600e3, names: 7 * 24 * 3600e3,
@@ -901,8 +918,29 @@
     }
 
     /* Remember which sections the user left open. */
-    const SEC_DEFAULT = { oc: true };          // current OC starts expanded
+    /* Feature List and Status start expanded so a fresh install looks exactly as
+       it did before they became collapsible; CIT button starts folded because
+       most people set it once. Whatever the user leaves open is remembered. */
+    const SEC_DEFAULT = { oc: true, features: true, status: true, tabpages: false };
     const secOpen = k => getV('cit_sec_' + k, !!SEC_DEFAULT[k]);
+
+    /* One-line gists for the collapsed Feature List / CIT button / Status
+       summaries, so folding a section does not hide whether it needs attention. */
+    function tabWhereNote() {
+        const on = S.tabOn;
+        if (on.everywhere) return 'everywhere';
+        const n = TAB_PAGES.filter(pg => pg.k !== 'everywhere' && on[pg.k]).length;
+        if (!n) return 'hidden';
+        return n + (n > 1 ? ' pages' : ' page');
+    }
+
+    function statusNote() {
+        if (LOADING) return 'refreshing\u2026';
+        const bad = Object.keys(DATA.errors || {}).length;
+        if (bad) return bad + (bad > 1 ? ' errors' : ' error');
+        if (!S.useApi || !S.key) return 'no API key';
+        return 'ok';
+    }
     const secSet  = (k, v) => setV('cit_sec_' + k, !!v);
 
     function forgeryUsesOf(material) {
@@ -1629,15 +1667,34 @@
                 ? '<span class="cit-spin"></span>Loading…' : 'Refresh data'}</button>
             <button id="cit-diag">Diagnostics</button>
 
-            <h4>Display</h4>
+            <details data-sec="features" ${secOpen('features') ? 'open' : ''}>
+              <summary>Feature List</summary>
             <label><input type="checkbox" id="cit-c" ${S.showC ? 'checked' : ''}> Show [C] badges</label>
             <label><input type="checkbox" id="cit-oc" ${S.showOC ? 'checked' : ''}> Show [OC] badges</label>
             <label title="In a Torn NPC shop, bazaar or the item market, greys out the items a Crime or an OC needs, so what stays bright is safe to sell."><input type="checkbox" id="cit-dimtag" ${S.dimTagged ? 'checked' : ''}> Dim Crime &amp; OC Items in Torn NPC Shops page</label>
             <label title="Master switch for every call to Torn's API. Off: the script still tags every item from its built-in data and reads quantities from your item pages, but live OC status, teammate names and the item catalogue stop."><input type="checkbox" id="cit-api" ${S.useApi ? 'checked' : ''}> Live OC data (Torn API)</label>
             <label><input type="checkbox" id="cit-ocmgr" ${S.ocMgr ? 'checked' : ''}> OC Manager</label>
             <label title="On your own Items page, greys out everything that is NOT used by a Crime or an OC."><input type="checkbox" id="cit-dim" ${S.dim ? 'checked' : ''}> Dim non crime &amp; non OC items in Items page</label>
+            </details>
 
-            <h4>Status</h4>
+            <details data-sec="tabpages" ${secOpen('tabpages') ? 'open' : ''}>
+              <summary>CIT button <span class="cit-sum-note">${tabWhereNote()}</span></summary>
+              <div class="muted" style="font-size:11px;margin:2px 0 4px">Where the CIT tab appears. Everything else keeps working on pages without it.</div>
+              ${TAB_PAGES.map(pg => {
+                  const on   = !!S.tabOn[pg.k];
+                  const lock = pg.k !== 'everywhere' && !!S.tabOn.everywhere;
+                  return `<label${lock ? ' title="Everywhere is on, so this is already covered."' : ''}` +
+                         `${lock ? ' style="opacity:.55"' : ''}>` +
+                         `<input type="checkbox" class="cit-tabpg" data-pg="${pg.k}"` +
+                         `${on ? ' checked' : ''}${lock ? ' disabled' : ''}> ${pg.label}</label>`;
+              }).join('')}
+              ${MENU_OK ? '' : `<div class="muted" style="font-size:11px;margin-top:4px">` +
+                  `Your userscript manager has no menu command, so at least one page must stay ticked ` +
+                  `\u2014 otherwise this panel could not be reopened.</div>`}
+            </details>
+
+            <details data-sec="status" ${secOpen('status') ? 'open' : ''}>
+              <summary>Status <span class="cit-sum-note">${statusNote()}</span></summary>
             ${LOADING ? '<div class="muted">Refreshing from the Torn API…</div>' : ''}
             <div>Key access: ${DATA.keyInfo
                 ? `<span class="ok">${DATA.keyInfo.access_type || DATA.keyInfo.access_level}</span>`
@@ -1658,6 +1715,7 @@
             <div>OC definitions: ${DATA.ocDefs
                 ? `<span class="ok">${DATA.ocDefs.length} crimes, ${Object.keys(DATA.ocDefIndex || {}).length} items</span>`
                 : '<span class="muted">built-in table</span>'}</div>
+            </details>
 
             <details data-sec="oc" ${secOpen('oc') ? 'open' : ''}>
               <summary>Your current OC <span class="cit-sum-note">${ocSummary}</span></summary>
@@ -1738,14 +1796,75 @@
         bind('#cit-dimtag', 'dimTagged');
         bind('#cit-api', 'useApi');
         p.querySelector('#cit-ocmgr').onchange = e => { S.ocMgr = e.target.checked; repaintPanel(); };
+        p.querySelectorAll('.cit-tabpg').forEach(cb => {
+            cb.onchange = e => {
+                const on = S.tabOn;
+                const k  = e.target.getAttribute('data-pg');
+                if (e.target.checked) on[k] = true; else delete on[k];
+                /* Without a manager menu the panel is only reachable from the tab,
+                   so never let the last page be unticked -- fall back to
+                   Everywhere rather than stranding the user. */
+                if (!MENU_OK && !Object.keys(on).length) on.everywhere = true;
+                S.tabOn = on;
+                mountTab();                   // apply now, don't wait for the interval
+                repaintPanel();               // Everywhere locks/unlocks the rest
+            };
+        });
     }
 
+    /* Whether the userscript manager gives us a menu. Tampermonkey does;
+       Torn PDA has no GM_registerMenuCommand, and without one the panel would be
+       unreachable after hiding the tab -- so there the option is disabled. */
+    let MENU_OK = false;
     try {
-        GM_registerMenuCommand('Crime Item Tagger — settings', openPanel);
+        GM_registerMenuCommand('Crime Item Tagger \u2014 settings', openPanel);
+        GM_registerMenuCommand('Crime Item Tagger \u2014 show the CIT tab everywhere', () => {
+            const on = S.tabOn;
+            on.everywhere = true;
+            S.tabOn = on;
+            mountTab();
+        });
+        MENU_OK = true;
     } catch (e) {}
 
     /* ---- Persistent side tab, bottom-right, like the HT / FF tabs ---- */
+    /* Where the tab may appear. Tested against the live URL rather than the
+       cached ON_* flags, because the faction tabs are hash-only navigation --
+       switching Crimes <-> Armoury never reloads the page. Order here is the
+       order shown in the panel. */
+    const TAB_PAGES = [
+        { k: 'everywhere', label: 'Everywhere',
+          test: () => true },
+        { k: 'items',      label: 'Items',
+          test: () => /\/items?\.php/.test(location.pathname) },
+        { k: 'crimes',     label: 'Crimes',
+          test: () => /\/crimes\.php/.test(location.pathname) },
+        { k: 'faccrimes',  label: 'Faction \u2192 Crimes',
+          test: () => /\/factions\.php/.test(location.pathname) && /tab=crimes/i.test(location.hash) },
+        { k: 'facarmoury', label: 'Faction \u2192 Armoury',
+          test: () => /\/factions\.php/.test(location.pathname) && /tab=armoury/i.test(location.hash) },
+        { k: 'imarket',    label: 'Item Market',
+          test: () => /\/imarket\.php/.test(location.pathname)
+                      || /sid=ItemMarket/i.test(location.search + location.hash) },
+        { k: 'bazaar',     label: 'Bazaar Directory / Bazaars',
+          test: () => /\/bazaar\.php/.test(location.pathname) },
+        { k: 'shops',      label: 'Torn NPC Shops',
+          test: () => /\/shops\.php/.test(location.pathname) }
+    ];
+
+    function tabAllowedHere() {
+        const on = S.tabOn;
+        if (on.everywhere) return true;
+        return TAB_PAGES.some(pg => pg.k !== 'everywhere' && on[pg.k] && pg.test());
+    }
+
     function mountTab() {
+        /* Where the tab shows is cosmetic only: badges, the missing-item banner,
+           the armoury helper and every harvest run off page events, not off this
+           element. The 3s re-mount interval doubles as the remover, so the tab
+           appears and disappears correctly even though Torn re-renders
+           constantly and moves between faction tabs without a page load. */
+        if (!tabAllowedHere()) { document.getElementById('cit-tab')?.remove(); return; }
         if (document.getElementById('cit-tab')) return;
         const tab = document.createElement('div');
         tab.id = 'cit-tab';
@@ -2224,6 +2343,9 @@
     /* Everywhere on Torn: the tab, the panel and the missing-item banner. */
     mountTab();
     setInterval(mountTab, 3000);          // Torn re-renders aggressively; keep the tab alive
+    /* Faction Crimes <-> Armoury is hash-only, so nothing reloads; re-check at
+       once instead of leaving the tab wrong for up to 3s. */
+    window.addEventListener('hashchange', mountTab);
     if (getV('cit_open', false)) openPanel();
 
     /* Only where item rows exist: badge injection and the DOM observer. */
