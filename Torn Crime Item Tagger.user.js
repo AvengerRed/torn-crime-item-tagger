@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TORN Crime Item Tagger
 // @namespace    avengerred.torn
-// @version      2.12.0
+// @version      2.13.1
 // @description  Tags your inventory with [C] and [OC] badges showing which Crimes 2.0 and Organized Crimes each item is used for. Hover for the crimes, positions, and whether the item is consumed. Optional Torn API key adds live status for the OC you are in.
 // @author       AvengerRed
 // @license      MIT
@@ -37,7 +37,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '2.12.0';
+    const VERSION = '2.13.1';
     const LOG = (...a) => console.log('%c[CIT]', 'color:#d4a017;font-weight:bold', ...a);
     const WARN = (...a) => console.warn('[CIT]', ...a);
 
@@ -725,6 +725,63 @@
         return { ready, blocked };
     }
 
+    /* Coverage for every crime, not just Forgery: group the built-in item table
+       by crime and check what you hold. */
+    function crimeCoverage() {
+        const inv = effInv();
+        const idOf = nm => DATA.nameToId ? DATA.nameToId[String(nm).toLowerCase()] : null;
+        const qty  = nm => { const id = idOf(nm); return (id && inv && inv[id]) ? inv[id] : 0; };
+        const known = !!(inv && DATA.nameToId);
+
+        const byCrime = {};
+        Object.keys(ITEMS).forEach(nm => {
+            const t = ITEMS[nm];
+            if (!t.c) return;
+            crimesFor(t, nm).forEach(c => { (byCrime[c] = byCrime[c] || []).push(nm); });
+        });
+
+        let heldTotal = 0, allTotal = 0;
+        const blocks = Object.keys(byCrime).sort().map(c => {
+            const items = byCrime[c].slice().sort();
+            const held = items.filter(nm => qty(nm) > 0);
+            heldTotal += held.length; allTotal += items.length;
+
+            const lines = items.map(nm => {
+                const q = qty(nm);
+                return `<div class="${q > 0 ? 'ok' : 'bad'}">${esc(nm)}` +
+                       `${q > 0 ? ' \u00D7' + q : ' \u2014 none'}</div>`;
+            }).join('');
+
+            let extra = '';
+            if (c === 'Forgery') {
+                const f = forgeryReadiness();
+                if (f) extra =
+                    `<div class="cit-sub">Projects you can make now (${f.ready.length}): ` +
+                    `<span class="${f.ready.length ? 'ok' : 'muted'}">` +
+                    `${f.ready.map(esc).join(', ') || '\u2014'}</span></div>` +
+                    `<div class="cit-sub">Blocked (${f.blocked.length}):</div>` +
+                    `<div class="muted">${f.blocked.map(b =>
+                        `${esc(b.proj)} \u2014 needs ${esc(b.missing.join(', '))}`).join('<br>') || '\u2014'}</div>`;
+            }
+
+            return `<details class="cit-crime"${secOpen('crime:' + c) ? ' open' : ''}` +
+                   ` data-sec="crime:${esc(c)}"><summary>${esc(c)} ` +
+                   `<span class="cit-sum-note">${known ? held.length + '/' + items.length
+                                                       : items.length + ' items'}</span>` +
+                   `</summary>${lines}${extra}</details>`;
+        }).join('');
+
+        return {
+            html: (known ? '' : '<div class="muted">Quantities fill in as you open item tabs.</div>')
+                  + blocks,
+            summary: known ? `${heldTotal} of ${allTotal} items held` : `${allTotal} items tracked`
+        };
+    }
+
+    /* Remember which sections the user left open. */
+    const secOpen = k => getV('cit_sec_' + k, false);
+    const secSet  = (k, v) => setV('cit_sec_' + k, !!v);
+
     function forgeryUsesOf(material) {
         const out = [];
         for (const proj in FORGERY) if (FORGERY[proj].some(m => m.toLowerCase() === material.toLowerCase())) out.push(proj);
@@ -813,6 +870,23 @@
             border-radius:3px; cursor:pointer; margin:6px 6px 0 0; }
         #cit-panel button:hover { background:#555; }
         #cit-panel label { display:block; margin:4px 0; cursor:pointer; }
+        #cit-panel .cit-spin { display:inline-block; width:9px; height:9px; margin-right:5px;
+            border:2px solid #999; border-top-color:transparent; border-radius:50%;
+            vertical-align:-1px; animation:cit-rot .7s linear infinite; }
+        @keyframes cit-rot { to { transform:rotate(360deg); } }
+
+        #cit-panel details > summary { cursor:pointer; color:#d4a017; font-size:12px;
+            font-weight:bold; margin:12px 0 4px; padding-top:8px; border-top:1px solid #444;
+            list-style:none; user-select:none; }
+        #cit-panel details > summary::-webkit-details-marker { display:none; }
+        #cit-panel details > summary:before { content:'\u25B8 '; }
+        #cit-panel details[open] > summary:before { content:'\u25BE '; }
+        #cit-panel details.cit-crime > summary { color:#ccc; font-weight:normal; font-size:12px;
+            border-top:none; margin:5px 0 2px; padding-top:0; }
+        #cit-panel details.cit-crime { margin-left:2px; }
+        #cit-panel .cit-sum-note { color:#888; font-weight:normal; }
+        #cit-panel .cit-sub { margin:4px 0 2px; color:#aaa; }
+
         #cit-panel .ok   { color:#6ab04c; }
         #cit-panel .bad  { color:#c0392b; }
         #cit-panel .muted{ color:#888; }
@@ -832,6 +906,7 @@
     /* ---- Hover tooltip -------------------------------------------------
        The native title attribute collapses newlines into one run-on line, so
        we render our own panel. */
+    let LOADING = false;
     let tipEl = null, tipOwner = null;
 
     function ensureTipEl() {
@@ -1127,7 +1202,7 @@
         const p = document.createElement('div');
         p.id = 'cit-panel';
 
-        const f = forgeryReadiness();
+        const cc = crimeCoverage();
         const oc = DATA.oc;
         const nameOfId = id => (DATA.catalogue && DATA.catalogue[id]) || ('item ' + id);
         let ocHtml = '<div class="muted">Not in an OC, or feed unavailable.</div>';
@@ -1150,7 +1225,12 @@
                    + warn + rowsHtml;
         }
 
+        const ocSummary = oc
+            ? `${esc(oc.name)} \u00B7 ${fmtLeft(oc.ready_at)}`
+            : 'not in one';
+
         /* Coverage across every OC in the game, from the authoritative defs. */
+        let covSummary = '';
         let covHtml = '<div class="muted">Needs OC definitions + inventory.</div>';
         const covInv = effInv();
         if (DATA.ocDefIndex && covInv) {
@@ -1161,6 +1241,7 @@
                 (have > 0 ? held : missing).push({ id, e, have });
             });
             missing.sort((a, b) => b.e.uses.length - a.e.uses.length);
+            covSummary = `${held.length} of ${held.length + missing.length} held`;
             covHtml =
                 `<div class="ok">You hold ${held.length} of ${held.length + missing.length} OC items.</div>` +
                 `<div class="bad" style="margin-top:6px">Missing (${missing.length}), most-used first:</div>` +
@@ -1178,7 +1259,8 @@
             <input type="text" id="cit-key" value="${S.key ? S.key.replace(/./g, '•') : ''}" placeholder="paste key, then Save">
             <button id="cit-save">Save key</button>
             <button id="cit-clear">Clear</button>
-            <button id="cit-reload">Refresh data</button>
+            <button id="cit-reload"${LOADING ? ' disabled' : ''}>${LOADING
+                ? '<span class="cit-spin"></span>Loading…' : 'Refresh data'}</button>
             <button id="cit-diag">Diagnostics</button>
 
             <h4>Display</h4>
@@ -1188,6 +1270,7 @@
             <label><input type="checkbox" id="cit-api" ${S.useApi ? 'checked' : ''}> Use API enrichment</label>
 
             <h4>Status</h4>
+            ${LOADING ? '<div class="muted">Refreshing from the Torn API…</div>' : ''}
             <div>Key access: ${DATA.keyInfo
                 ? `<span class="ok">${DATA.keyInfo.access_type || DATA.keyInfo.access_level}</span>`
                 : '<span class="muted">unknown</span>'}</div>
@@ -1208,25 +1291,27 @@
                 ? `<span class="ok">${DATA.ocDefs.length} crimes, ${Object.keys(DATA.ocDefIndex || {}).length} items</span>`
                 : '<span class="muted">built-in table</span>'}</div>
 
-            <h4>Your current OC</h4>
-            ${ocHtml}
+            <details data-sec="oc" ${secOpen('oc') ? 'open' : ''}>
+              <summary>Your current OC <span class="cit-sum-note">${ocSummary}</span></summary>
+              ${ocHtml}
+            </details>
 
-            <h4>OC item coverage (all crimes)</h4>
-            ${covHtml}
+            <details data-sec="occov" ${secOpen('occov') ? 'open' : ''}>
+              <summary>Organized Crime item coverage <span class="cit-sum-note">${covSummary}</span></summary>
+              ${covHtml}
+            </details>
 
-            <h4>Forgery readiness</h4>
-            ${f ? `
-                <div class="ok">Ready (${f.ready.length}): ${f.ready.join(', ') || '—'}</div>
-                <div class="bad" style="margin-top:6px">Blocked (${f.blocked.length}):</div>
-                <div class="muted">${f.blocked.map(b => `${b.proj} — missing ${b.missing.join(', ')}`).join('<br>') || '—'}</div>
-            ` : '<div class="muted">Needs inventory data (add an API key).</div>'}
+            <details data-sec="crimecov" ${secOpen('crimecov') ? 'open' : ''}>
+              <summary>Crime item coverage <span class="cit-sum-note">${cc.summary}</span></summary>
+              ${cc.html}
+            </details>
         `;
         document.body.appendChild(p);
 
         p.querySelector('#cit-close').onclick = () => { p.remove(); setV('cit_open', false); };
         p.querySelector('#cit-save').onclick = () => {
             const v = p.querySelector('#cit-key').value.trim();
-            if (v && !/^•+$/.test(v)) { S.key = v; LOG('key saved'); bootstrap(true).then(() => { p.remove(); openPanel(); }); }
+            if (v && !/^•+$/.test(v)) { S.key = v; LOG('key saved'); LOADING = true; repaintPanel(); bootstrap(true); }
         };
         p.querySelector('#cit-clear').onclick = () => {
             S.key = ''; ['catalogue', 'ocdefs', 'inventory', 'oc', 'self', 'names'].forEach(n => setV('cit_cache_' + n, null));
@@ -1235,7 +1320,9 @@
         };
         p.querySelector('#cit-reload').onclick = () => {
             ['catalogue', 'ocdefs', 'inventory', 'oc', 'self', 'names'].forEach(n => setV('cit_cache_' + n, null));
-            bootstrap(true).then(() => { p.remove(); openPanel(); });
+            LOADING = true;
+            repaintPanel();          // immediate feedback; steps repaint as they land
+            bootstrap(true);
         };
         p.querySelector('#cit-diag').onclick = () => {
             const rs = rows();
@@ -1258,6 +1345,10 @@
             }
             alert('Diagnostics written to the browser console (F12 → Console). Copy the [CIT] lines.');
         };
+
+        p.querySelectorAll('details[data-sec]').forEach(d => {
+            d.addEventListener('toggle', () => secSet(d.getAttribute('data-sec'), d.open));
+        });
 
         const bind = (sel, prop) => {
             p.querySelector(sel).onchange = e => { S[prop] = e.target.checked; refresh(true); };
@@ -1296,32 +1387,39 @@
         }
     }
 
-    /* Show one banner listing every item your position is short of. Dismissal is
-       remembered per crime + item set, so it returns if the situation changes. */
+    /* Show one banner listing every item your position is short of.
+       Dismissal lasts only for the current page view -- reloading or navigating
+       back to the items page shows it again, so a missing item can't be
+       forgotten about before the crime runs. */
     function renderMissingBanner() {
         document.getElementById('cit-banner')?.remove();
         const missing = myMissingItems();
         if (!missing.length) return;
-
-        const sig = missing[0].crime + '|' + missing.map(m => m.id).sort().join(',');
-        if (getV('cit_banner_dismissed', '') === sig) return;
 
         const m0 = missing[0];
         const names = missing.map(m => m.name).join(', ');
         const b = document.createElement('div');
         b.id = 'cit-banner';
         b.innerHTML =
-            `<span class="cit-banner-x" title="Dismiss">\u2715</span>` +
+            `<span class="cit-banner-x" title="Hide until the next page load">\u2715</span>` +
             `\u26A0 Your <b>${esc(m0.crime)}</b> position (<b>${esc(m0.slot || '?')}</b>) ` +
             `is missing: <b>${esc(names)}</b>` +
             `<div class="cit-banner-sub">The crime starts in ${fmtLeft(m0.ready_at)}. ` +
             `You will not see a badge for ${missing.length > 1 ? 'these items' : 'this item'} ` +
             `— you do not own ${missing.length > 1 ? 'them' : 'it'} yet.</div>`;
-        b.querySelector('.cit-banner-x').onclick = () => {
-            setV('cit_banner_dismissed', sig);
-            b.remove();
-        };
+        b.querySelector('.cit-banner-x').onclick = () => b.remove();
         document.body.appendChild(b);
+    }
+
+    /* Rebuild the panel in place, keeping the scroll position, so it can update
+       while data is still loading instead of only once everything finishes. */
+    function repaintPanel() {
+        const cur = document.getElementById('cit-panel');
+        if (!cur) return;
+        const top = cur.scrollTop;
+        openPanel();
+        const next = document.getElementById('cit-panel');
+        if (next) next.scrollTop = top;
     }
 
     function togglePanel() {
@@ -1336,12 +1434,15 @@
 
     async function bootstrap(force) {
         DATA.errors = {};
+        LOADING = true;
+        setV('cit_banner_dismissed', null);   // no longer used; dismissal is per page view
         loadDomInv();
         /* No key is a supported mode: the built-in crime data still tags every
            row, and quantities come from the pages themselves. */
-        if (!S.useApi || !S.key) { refresh(true); return; }
+        if (!S.useApi || !S.key) { LOADING = false; refresh(true); repaintPanel(); return; }
 
         await loadKeyInfo();
+        repaintPanel();
 
         const step = async (name, fn) => {
             try { await fn(); delete DATA.errors[name]; refresh(true); }
@@ -1349,6 +1450,7 @@
                 DATA.errors[name] = e.message + (e.code ? ` (code ${e.code})` : '');
                 WARN(name + ' failed:', DATA.errors[name]);
             }
+            repaintPanel();      // show each result as it arrives
         };
 
         await step('catalogue', async () => { await loadCatalogue(); buildIdMap(); });
@@ -1360,6 +1462,9 @@
 
         updateTabDot();
         renderMissingBanner();
+        repaintPanel();
+        LOADING = false;
+        repaintPanel();
     }
 
     new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true });
