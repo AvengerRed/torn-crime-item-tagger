@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TORN Crime Item Tagger
 // @namespace    avengerred.torn
-// @version      2.13.1
+// @version      2.16.0
 // @description  Tags your inventory with [C] and [OC] badges showing which Crimes 2.0 and Organized Crimes each item is used for. Hover for the crimes, positions, and whether the item is consumed. Optional Torn API key adds live status for the OC you are in.
 // @author       AvengerRed
 // @license      MIT
@@ -11,6 +11,7 @@
 // @match        https://www.torn.com/items.php*
 // @match        https://www.torn.com/bazaar.php*
 // @match        https://www.torn.com/imarket.php*
+// @match        https://www.torn.com/factions.php*
 // @connect      api.torn.com
 // @grant        GM_registerMenuCommand
 // @grant        GM_getValue
@@ -37,7 +38,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '2.13.1';
+    const VERSION = '2.16.0';
     const LOG = (...a) => console.log('%c[CIT]', 'color:#d4a017;font-weight:bold', ...a);
     const WARN = (...a) => console.warn('[CIT]', ...a);
 
@@ -426,6 +427,12 @@
         }
         DATA.oc = oc;
         DATA.ocIndex = buildOcIndex(oc);
+        Object.keys(DATA.ocIndex || {}).forEach(id => {
+            DATA.ocIndex[id].itemName =
+                (DATA.catalogue && DATA.catalogue[id])
+                || (DATA.ocDefIndex && DATA.ocDefIndex[id] && DATA.ocDefIndex[id].name)
+                || ('item ' + id);
+        });
         reconcileWithOC();
         return oc;
     }
@@ -457,6 +464,33 @@
 
     const memberName = id => (DATA.names && DATA.names[id]) || null;
 
+    const ARMOURY_URL = 'https://www.torn.com/factions.php?step=your&type=1'
+                      + '#/tab=armoury&start=0&sub=utilities';
+
+    /* A teammate's name links to the faction armoury rather than their profile,
+       carrying what to loan and to whom. The handler stashes that, then lets the
+       navigation happen normally. */
+    function loanLink(itemId, itemName, userId) {
+        const nm = memberName(userId) || ('ID ' + userId);
+        return `<a class="cit-tip-who" href="${ARMOURY_URL}"` +
+               ` data-cit-loan="${esc(String(itemId))}" data-cit-uid="${esc(String(userId))}"` +
+               ` data-cit-item="${esc(itemName || '')}" data-cit-name="${esc(memberName(userId) || '')}"` +
+               ` title="Open the faction armoury and set up a loan of ${esc(itemName || 'this item')}` +
+               ` to ${esc(nm)}">${esc(nm)}</a>`;
+    }
+
+    document.addEventListener('click', e => {
+        const a = e.target && e.target.closest && e.target.closest('a[data-cit-loan]');
+        if (!a) return;
+        setV('cit_loan_intent', JSON.stringify({
+            itemId:   a.getAttribute('data-cit-loan'),
+            itemName: a.getAttribute('data-cit-item'),
+            userId:   a.getAttribute('data-cit-uid'),
+            userName: a.getAttribute('data-cit-name'),
+            ts: Date.now()
+        }));
+    }, true);
+
     /* itemId -> { total, mine, missing, reusable, slots:[labels], crime, ready_at } */
     function buildOcIndex(oc) {
         if (!oc || !Array.isArray(oc.slots)) return null;
@@ -468,14 +502,17 @@
             const e = idx[req.id] || (idx[req.id] = {
                 total: 0, mine: false, missing: 0, reusable: !!req.is_reusable,
                 slots: [], missingSlots: [], crime: oc.name, status: oc.status,
-                ready_at: oc.ready_at
+                ready_at: oc.ready_at, itemId: req.id, itemName: null
             });
             e.total++;
             const label = (s.position_info && s.position_info.label) || s.position || '?';
             e.slots.push(label);
+            const uid = s.user && s.user.id;
             if (!req.is_available) {
                 e.missing++;
-                e.missingSlots.push({ label, userId: s.user && s.user.id });
+                /* Your own shortfall is already called out separately, so the
+                   teammate list covers everyone but you. */
+                if (!myId || uid !== myId) e.missingSlots.push({ label, userId: uid });
             }
             if (myId && s.user && s.user.id === myId) {
                 e.mine = true;
@@ -779,7 +816,8 @@
     }
 
     /* Remember which sections the user left open. */
-    const secOpen = k => getV('cit_sec_' + k, false);
+    const SEC_DEFAULT = { oc: true };          // current OC starts expanded
+    const secOpen = k => getV('cit_sec_' + k, !!SEC_DEFAULT[k]);
     const secSet  = (k, v) => setV('cit_sec_' + k, !!v);
 
     function forgeryUsesOf(material) {
@@ -825,7 +863,7 @@
         /* Right-edge button, same idiom as the HT / FF tabs. */
         #cit-tip { position:fixed; display:none; z-index:2147483600; max-width:330px;
             background:#191919; color:#ddd; border:1px solid #555; border-radius:6px;
-            padding:10px 12px; font:12px/1.5 Arial,sans-serif; pointer-events:none;
+            padding:10px 12px; font:12px/1.5 Arial,sans-serif; pointer-events:auto;
             box-shadow:0 6px 22px rgba(0,0,0,.75); }
         #cit-tip .cit-tip-head { font-weight:bold; font-size:13px; margin-bottom:1px; }
         #cit-tip .cit-tip-sub { color:#999; font-size:11px; margin-bottom:7px; }
@@ -932,24 +970,38 @@
         if (tipEl) tipEl.style.display = 'none';
     }
 
+    /* Never let the tooltip sit under the cursor's landing spot. */
+    function positionTipSafe(x, y) { positionTip(x, y); }
+
+    /* The tooltip contains links, so it has to stay put while the cursor travels
+       from the badge into it. Hide on a short delay instead of immediately, and
+       cancel that delay if the cursor lands on the tooltip. */
+    let hideTimer = null;
+    const cancelHide = () => { if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; } };
+    const scheduleHide = () => { cancelHide(); hideTimer = setTimeout(hideTip, 260); };
+
     document.addEventListener('mouseover', e => {
-        const b = e.target && e.target.closest && e.target.closest('[data-cit="1"]');
+        const t = e.target;
+        if (!t || !t.closest) return;
+        if (t.closest('#cit-tip')) { cancelHide(); return; }
+        const b = t.closest('[data-cit="1"]');
         if (!b || !b._citTip) return;
+        cancelHide();
         const d = ensureTipEl();
         if (tipOwner !== b) { tipOwner = b; d.innerHTML = b._citTip; d.style.display = 'block'; }
         positionTip(e.clientX, e.clientY);
     }, true);
 
     document.addEventListener('mousemove', e => {
-        if (!tipOwner) return;
-        const b = e.target && e.target.closest && e.target.closest('[data-cit="1"]');
-        if (b === tipOwner) positionTip(e.clientX, e.clientY);
-        else hideTip();
+        if (!tipOwner || !e.target || !e.target.closest) return;
+        if (e.target.closest('#cit-tip')) return;               // let it be read
+        if (e.target.closest('[data-cit="1"]') === tipOwner) positionTip(e.clientX, e.clientY);
     }, true);
 
     document.addEventListener('mouseout', e => {
-        const b = e.target && e.target.closest && e.target.closest('[data-cit="1"]');
-        if (b && b === tipOwner) hideTip();
+        const t = e.target;
+        if (!t || !t.closest) return;
+        if (t.closest('#cit-tip') || t.closest('[data-cit="1"]') === tipOwner) scheduleHide();
     }, true);
 
     window.addEventListener('scroll', hideTip, true);
@@ -1008,20 +1060,20 @@
         }
         body += `<div class="cit-tip-label">Positions needing it</div>` +
                 `<div class="cit-tip-p">${esc(live.slots.join(', '))}</div>`;
-        if (live.missing) {
+        const others = live.missingSlots || [];
+        if (others.length) {
             /* is_available === false means the member IN that position does not
                have the item -- it does NOT mean the position is empty. */
-            body += `<div class="cit-tip-warn">${live.missing} teammate` +
-                    `${live.missing > 1 ? 's do' : ' does'} not have this item yet:</div>`;
-            body += live.missingSlots.map(m => {
-                const who = m.userId ? (memberName(m.userId) || ('ID ' + m.userId)) : null;
-                return `<div class="cit-tip-p cit-tip-dim">${esc(m.label)}` +
-                       (m.userId
-                          ? ` \u2014 <a class="cit-tip-who"`
-                            + ` href="https://www.torn.com/profiles.php?XID=${m.userId}"`
-                            + ` target="_blank" rel="noopener">${esc(who)}</a>`
-                          : '') + `</div>`;
-            }).join('');
+            body += `<div class="cit-tip-warn">${others.length} teammate` +
+                    `${others.length > 1 ? 's do' : ' does'} not have this item yet:</div>`;
+            body += others.map(m =>
+                `<div class="cit-tip-p cit-tip-dim">${esc(m.label)}` +
+                (m.userId ? ` \u2014 ${loanLink(live.itemId, live.itemName, m.userId)}` : '') +
+                `</div>`).join('');
+            body += `<div class="cit-tip-p cit-tip-dim" style="margin-top:4px">` +
+                    `Click a name to open the armoury with that loan set up.</div>`;
+        } else if (live.missing) {
+            body += `<div class="cit-tip-warn">You are the only one missing this.</div>`;
         } else {
             body += `<div class="cit-tip-ok">Everyone in this crime has it.</div>`;
         }
@@ -1211,9 +1263,20 @@
                 const e = DATA.ocIndex[id];
                 const have = qtyOf(id);
                 const cls = e.mine && !e.myAvailable ? 'bad' : e.missing ? 'bad' : 'ok';
-                return `<div class="${cls}">${nameOfId(id)} ×${e.total}${e.mine ? ' <b>(your slot: ' + e.mySlot + ')</b>' : ''}` +
-                       ` — ${e.missing ? e.missing + ' teammate(s) without it' : 'everyone has it'}` +
-                       `${have === null ? '' : (have > 0 ? ` · you hold ${have}` : ' · <b>you have none</b>')}</div>`;
+                const others = e.missingSlots || [];
+                const who = others.length
+                    ? `<div class="muted" style="margin:1px 0 4px 10px">` +
+                      others.map(m => `${esc(m.label)}: ` +
+                        (m.userId ? loanLink(id, nameOfId(id), m.userId) : '?')).join('<br>') +
+                      `</div>`
+                    : '';
+                return `<div class="${cls}">${nameOfId(id)} ×${e.total}` +
+                       `${e.mine ? ' <b>(your slot: ' + e.mySlot + ')</b>' : ''}` +
+                       ` — ${others.length
+                              ? others.length + ' teammate' + (others.length > 1 ? 's' : '') + ' without it'
+                              : 'everyone else has it'}` +
+                       `${have === null ? '' : (have > 0 ? ` · you hold ${have}` : ' · <b>you have none</b>')}` +
+                       `</div>${who}`;
             }).join('');
             const mine = myMissingItems();
             const warn = mine.length
@@ -1429,6 +1492,175 @@
     }
 
     /* ==================================================================
+       SECTION 6b — ARMOURY LOAN ASSIST
+       Clicking a teammate's name stores what to loan, then navigates here. We
+       find the item's AVAILABLE row, open its loan form and prefill the member
+       box. The final LOAN click is always left to the user — this script never
+       transfers items on its own.
+       ================================================================== */
+
+    const ON_FACTIONS = /\/factions\.php/.test(location.pathname);
+
+    function loanBanner(html, tone) {
+        document.getElementById('cit-banner')?.remove();
+        const b = document.createElement('div');
+        b.id = 'cit-banner';
+        if (tone === 'ok') { b.style.background = '#1d5c2e'; b.style.borderColor = '#2e8b4a'; }
+        b.innerHTML = `<span class="cit-banner-x" title="Hide">\u2715</span>${html}`;
+        b.querySelector('.cit-banner-x').onclick = () => b.remove();
+        document.body.appendChild(b);
+        return b;
+    }
+
+    /* Smallest element containing the item name, an "Available" marker and a
+       Loan control. Class names on this page are unknown, so match on content. */
+    function findArmouryRow(itemName) {
+        const cands = [];
+        document.querySelectorAll('li, tr, div').forEach(el => {
+            const t = el.textContent || '';
+            if (t.indexOf(itemName) === -1) return;
+            if (!/Available/i.test(t)) return;
+            if (t.length > 400) return;
+            if (!Array.prototype.some.call(el.querySelectorAll('a, button'),
+                    x => /^Loan$/i.test((x.textContent || '').trim()))) return;
+            cands.push(el);
+        });
+        cands.sort((a, b) => a.querySelectorAll('*').length - b.querySelectorAll('*').length);
+        return cands[0] || null;
+    }
+
+    /* React ignores a plain .value assignment, so use the native setter and
+       fire the events it listens for. */
+    function setReactValue(el, value) {
+        const proto = (el instanceof HTMLTextAreaElement)
+            ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+        const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+        setter.call(el, value);
+        el.dispatchEvent(new Event('input',  { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+    }
+
+    /* Confirmed markup: the member picker is an autocomplete combobox
+         <input class="searchInput___*" role="combobox" name="userword"
+                aria-controls="userword-listbox" placeholder="search...">
+       Setting .value alone does not select anyone -- the listbox has to open and
+       an option has to be clicked. Other extensions (TornTools, Torn Honor
+       Tools) also add inputs to this page, so we only consider inputs that
+       appear AFTER the loan form opens. */
+
+    function visibleTextInputs() {
+        return Array.prototype.filter.call(
+            document.querySelectorAll('input[type="text"], input:not([type]), input[role="combobox"]'),
+            el => el.offsetParent !== null);
+    }
+
+    function pickMemberBox(before) {
+        const now = visibleTextInputs();
+        const fresh = now.filter(el => before.indexOf(el) === -1);
+        const pool = fresh.length ? fresh : now;
+        return pool.find(el =>
+                   /userword/i.test(el.name || '') ||
+                   /userword/i.test(el.getAttribute('aria-controls') || '') ||
+                   el.getAttribute('role') === 'combobox')
+            || null;
+    }
+
+    /* Type into the combobox, wait for its listbox, click the matching option. */
+    function selectMember(input, userName, userId, done) {
+        setReactValue(input, userName || String(userId));
+        input.focus();
+
+        let n = 0;
+        const timer = setInterval(() => {
+            if (++n > 25) { clearInterval(timer); done(false); return; }   // ~5s
+            const lbId = input.getAttribute('aria-controls');
+            const lb = lbId ? document.getElementById(lbId) : null;
+            const opts = lb
+                ? lb.querySelectorAll('[role="option"], li, a, div')
+                : document.querySelectorAll('[role="option"]');
+            const match = Array.prototype.find.call(opts, o => {
+                const t = (o.textContent || '').trim();
+                if (!t) return false;
+                return t.indexOf(String(userId)) !== -1 ||
+                       (userName && t.toLowerCase().indexOf(userName.toLowerCase()) !== -1);
+            });
+            if (!match) return;
+            clearInterval(timer);
+            match.click();
+            LOG('armoury assist: picked listbox option', (match.textContent || '').trim());
+            done(true);
+        }, 200);
+    }
+
+    function armouryAssist() {
+        const raw = getV('cit_loan_intent', null);
+        if (!raw) return;
+        setV('cit_loan_intent', null);                     // one-shot
+        let it; try { it = JSON.parse(raw); } catch (e) { return; }
+        if (!it || Date.now() - it.ts > 180000) return;    // stale
+
+        const who = it.userName ? `${it.userName} [${it.userId}]` : String(it.userId);
+        let banner = loanBanner(
+            `Setting up a loan of <b>${esc(it.itemName)}</b> to <b>${esc(who)}</b>\u2026` +
+            `<div class="cit-banner-sub">Check the quantity, then press LOAN yourself. ` +
+            `This script never transfers items for you.</div>`);
+
+        let tries = 0;
+        const timer = setInterval(() => {
+            if (++tries > 40) {                             // ~20s
+                clearInterval(timer);
+                loanBanner(`Could not find an available <b>${esc(it.itemName)}</b> row.` +
+                    `<div class="cit-banner-sub">Loan it to <b>${esc(who)}</b> manually.</div>`);
+                LOG('armoury assist: no available row for', it.itemName);
+                return;
+            }
+            const row = findArmouryRow(it.itemName);
+            if (!row) return;
+            clearInterval(timer);
+
+            row.scrollIntoView({ block: 'center' });
+            row.style.outline = '2px solid #d4a017';
+
+            const loanEl = Array.prototype.find.call(row.querySelectorAll('a, button'),
+                x => /^Loan$/i.test((x.textContent || '').trim()));
+            if (!loanEl) {
+                loanBanner(`Found <b>${esc(it.itemName)}</b> but no Loan control on that row.`);
+                return;
+            }
+
+            const before = visibleTextInputs();             // ignore other extensions' inputs
+            loanEl.click();
+
+            let t2 = 0;
+            const t2timer = setInterval(() => {
+                if (++t2 > 30) {                            // ~12s
+                    clearInterval(t2timer);
+                    loanBanner(`Loan form for <b>${esc(it.itemName)}</b> is open.` +
+                        `<div class="cit-banner-sub">Type <b>${esc(who)}</b> into the member box, ` +
+                        `then press LOAN.</div>`, 'ok');
+                    return;
+                }
+                const box = pickMemberBox(before);
+                if (!box) return;
+                clearInterval(t2timer);
+                LOG('armoury assist: member combobox found', box.outerHTML.slice(0, 160));
+
+                selectMember(box, it.userName, it.userId, ok => {
+                    if (banner) banner.remove();
+                    loanBanner(ok
+                        ? `Ready: <b>${esc(it.itemName)}</b> \u2192 <b>${esc(who)}</b>` +
+                          `<div class="cit-banner-sub">Set the quantity and press LOAN.</div>`
+                        : `Loan form open for <b>${esc(it.itemName)}</b>.` +
+                          `<div class="cit-banner-sub">The member list did not offer a match \u2014 ` +
+                          `type <b>${esc(who)}</b> and pick them, then press LOAN.</div>`,
+                        ok ? 'ok' : undefined);
+                });
+            }, 400);
+        }, 500);
+    }
+
+    /* ==================================================================
        SECTION 7 — BOOTSTRAP
        ================================================================== */
 
@@ -1465,6 +1697,12 @@
         repaintPanel();
         LOADING = false;
         repaintPanel();
+    }
+
+    if (ON_FACTIONS) {
+        armouryAssist();
+        LOG('v' + VERSION + ' loaded on the faction page (armoury loan assist only).');
+        return;
     }
 
     new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true });
