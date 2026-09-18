@@ -12,7 +12,7 @@ and whether you get the item back.*
 
 ### Crimes tooltip
 
-![Crimes tooltip](screenshot2.png)
+![Crimes tooltip](Screenshot2.png)
 
 *What the item does in each regular crime — and for forgery materials, every project
 it can be used to make.*
