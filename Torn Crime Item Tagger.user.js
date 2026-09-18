@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TORN Crime Item Tagger
 // @namespace    avengerred.torn
-// @version      2.10.0
+// @version      2.11.0
 // @description  Tags your inventory with [C] and [OC] badges showing which Crimes 2.0 and Organized Crimes each item is used for. Hover for the crimes, positions, and whether the item is consumed. Optional Torn API key adds live status for the OC you are in.
 // @author       AvengerRed
 // @license      MIT
@@ -37,7 +37,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '2.10.0';
+    const VERSION = '2.11.0';
     const LOG = (...a) => console.log('%c[CIT]', 'color:#d4a017;font-weight:bold', ...a);
     const WARN = (...a) => console.warn('[CIT]', ...a);
 
@@ -255,7 +255,8 @@
         set useApi(v)    { setV('cit_useApi', v); }
     };
 
-    const TTL = { catalogue: 7 * 24 * 3600e3, ocDefs: 7 * 24 * 3600e3, inventory: 60e3, oc: 120e3 };
+    const TTL = { catalogue: 7 * 24 * 3600e3, ocDefs: 7 * 24 * 3600e3, names: 7 * 24 * 3600e3,
+                  inventory: 60e3, oc: 120e3 };
 
     function cacheGet(name, ttl) {
         const raw = getV('cit_cache_' + name, null);
@@ -304,7 +305,7 @@
 
     const DATA = { catalogue: null, inventory: null, oc: null, ocIndex: null,
                    ocDefs: null, ocDefIndex: null, self: null, keyInfo: null,
-                   domInv: null, errors: {} };
+                   domInv: null, names: null, errors: {} };
 
     /* Ask Torn what this key is actually allowed to do, so the panel can report
        missing selections instead of the script failing silently. */
@@ -427,6 +428,33 @@
         DATA.ocIndex = buildOcIndex(oc);
         return oc;
     }
+
+    /* The OC payload identifies teammates by id only. Resolve those to names so
+       the tooltip can say who is short of an item rather than "profile".
+       user/<id>?selections=basic works for other players on your own key. */
+    async function loadMemberNames() {
+        const names = cacheGet('names', TTL.names) || {};
+        DATA.names = names;
+        if (!DATA.oc || !Array.isArray(DATA.oc.slots)) return names;
+
+        const ids = DATA.oc.slots
+            .map(sl => sl.user && sl.user.id)
+            .filter((id, i, a) => id && a.indexOf(id) === i && !names[id]);
+
+        for (const id of ids) {
+            try {
+                const j = await API.raw('user/' + id + '?selections=basic');
+                if (j && j.name) names[id] = j.name;
+            } catch (e) {
+                WARN('name lookup failed for', id, '-', e.message);
+            }
+        }
+        cacheSet('names', names);
+        DATA.names = names;
+        return names;
+    }
+
+    const memberName = id => (DATA.names && DATA.names[id]) || null;
 
     /* itemId -> { total, mine, missing, reusable, slots:[labels], crime, ready_at } */
     function buildOcIndex(oc) {
@@ -698,6 +726,8 @@
             color:#bbb; }
         #cit-tip .cit-tip-crime { margin:7px 0; padding-left:8px; border-left:2px solid #444; }
         #cit-tip .cit-tip-crime-name { color:#eee; font-weight:bold; }
+        #cit-tip .cit-tip-who { color:#8ab4f8; text-decoration:none; font-weight:bold; }
+        #cit-tip .cit-tip-who:hover { text-decoration:underline; }
         #cit-tip .cit-tip-diff { color:#888; font-weight:normal; font-size:11px; margin-left:6px; }
 
         #cit-tab { position:fixed; right:0; top:55%; z-index:2147483000;
@@ -852,11 +882,15 @@
                have the item -- it does NOT mean the position is empty. */
             body += `<div class="cit-tip-warn">${live.missing} teammate` +
                     `${live.missing > 1 ? 's do' : ' does'} not have this item yet:</div>`;
-            body += live.missingSlots.map(m =>
-                `<div class="cit-tip-p cit-tip-dim">${esc(m.label)}` +
-                (m.userId ? ` \u2014 <a href="https://www.torn.com/profiles.php?XID=${m.userId}"`
-                          + ` target="_blank" rel="noopener">profile</a>` : '') +
-                `</div>`).join('');
+            body += live.missingSlots.map(m => {
+                const who = m.userId ? (memberName(m.userId) || ('ID ' + m.userId)) : null;
+                return `<div class="cit-tip-p cit-tip-dim">${esc(m.label)}` +
+                       (m.userId
+                          ? ` \u2014 <a class="cit-tip-who"`
+                            + ` href="https://www.torn.com/profiles.php?XID=${m.userId}"`
+                            + ` target="_blank" rel="noopener">${esc(who)}</a>`
+                          : '') + `</div>`;
+            }).join('');
         } else {
             body += `<div class="cit-tip-ok">Everyone in this crime has it.</div>`;
         }
@@ -1139,12 +1173,12 @@
             if (v && !/^•+$/.test(v)) { S.key = v; LOG('key saved'); bootstrap(true).then(() => { p.remove(); openPanel(); }); }
         };
         p.querySelector('#cit-clear').onclick = () => {
-            S.key = ''; ['catalogue', 'ocdefs', 'inventory', 'oc', 'self'].forEach(n => setV('cit_cache_' + n, null));
+            S.key = ''; ['catalogue', 'ocdefs', 'inventory', 'oc', 'self', 'names'].forEach(n => setV('cit_cache_' + n, null));
             DATA.catalogue = DATA.inventory = DATA.oc = DATA.ocIndex = DATA.ocDefs = DATA.ocDefIndex = DATA.self = DATA.keyInfo = null; BY_ID = null;
             refresh(true); p.remove(); openPanel();
         };
         p.querySelector('#cit-reload').onclick = () => {
-            ['catalogue', 'ocdefs', 'inventory', 'oc', 'self'].forEach(n => setV('cit_cache_' + n, null));
+            ['catalogue', 'ocdefs', 'inventory', 'oc', 'self', 'names'].forEach(n => setV('cit_cache_' + n, null));
             bootstrap(true).then(() => { p.remove(); openPanel(); });
         };
         p.querySelector('#cit-diag').onclick = () => {
@@ -1266,6 +1300,7 @@
         await step('ocdefs',    loadOcDefs);
         await step('self',      loadSelf);
         await step('oc',        loadOwnOC);
+        await step('names',     loadMemberNames);
 
         updateTabDot();
         renderMissingBanner();
