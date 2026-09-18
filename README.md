@@ -3,6 +3,16 @@
 Tags your inventory so you can see at a glance which items are used for **Crimes 2.0** and which are
 used for **Organized Crimes** — without cross-referencing the wiki every time.
 
+## Install
+
+**[Install from Greasy Fork](https://greasyfork.org/en/scripts/596304-torn-crime-item-tagger)** with
+Tampermonkey or Violentmonkey.
+
+Install from there rather than from the raw file in this repo — Greasy Fork is what tells your
+userscript manager when a new version exists, so installs from that page update themselves and
+installs from the raw link never do. This repo is the source; Greasy Fork syncs from it on every
+push.
+
 ### Don't sell what a crime needs
 
 ![Crime and OC items dimmed in a Torn shop](screenshot3.png)
@@ -50,6 +60,12 @@ A badge cannot tell you that — an item you do not own has no inventory row to 
 get a **red banner** naming the item, your position and the countdown, plus a red dot on the CIT tab.
 You can hide the banner, but it returns on every page load until you have the item.
 
+![Missing item linking through to the armoury](Usermissingitem%20to%20Utilities%20page.gif)
+
+*Under **Your current OC**, the name of the item you are short is a link. It opens the faction
+armoury on the Utilities tab, scrolls to that item and highlights the row for eight seconds — then
+you click **Give** yourself.*
+
 ### If a *teammate* is missing an item
 
 The tooltip names them. Clicking that name takes you to the faction armoury, scrolls to the item's
@@ -61,9 +77,14 @@ right text on the clipboard; every action that moves an item is yours.
 
 ## The panel
 
-A **CIT** tab sits on the right edge of every Torn page. Every section collapses and remembers
-whether you left it open.
+A **CIT** tab sits on the right edge of every Torn page — or only on the pages you choose, see
+**CIT button** below. Every section collapses and remembers whether you left it open.
 
+- **Feature List** — the switches in the table further down.
+- **CIT button** — which pages the CIT tab itself appears on.
+- **Status** — key access and which selections it carries, catalogue size, how many inventory stacks
+  have been seen, and how many OC definitions are loaded. Folded up it shows `ok`, `no API key` or
+  an error count, so collapsing it never hides a problem.
 - **Your current OC** — status, countdown, when the reading was taken, which positions are short,
   and whether the armoury can cover them.
 - **Organized Crime item coverage** — every OC item in the game, split into **Missing** and **Held**,
@@ -74,7 +95,7 @@ whether you left it open.
 - **OC Manager** *(optional, see below)* — every position across all your faction's organized crimes
   whose member is missing the required item.
 
-## Settings
+## Feature List
 
 | Setting | What it does |
 |---|---|
@@ -88,6 +109,29 @@ whether you left it open.
 The two dimming switches are deliberately opposite, because the question is opposite. On your Items
 page you want to find what a crime needs; in a shop you want to find what is safe to sell. Each one
 only acts on the pages it names.
+
+## CIT button
+
+If you would rather not have the tab on every page, tick only the pages you want it on:
+
+| Option | Where |
+|---|---|
+| **Everywhere** | Any Torn page — the default. Ticking this greys out the rest, since they are already covered. |
+| Items | Your own items page |
+| Crimes | The Crimes 2.0 page |
+| Faction → Crimes | Your faction's organized crimes tab |
+| Faction → Armoury | Your faction's armoury tab |
+| Item Market | The item market |
+| Bazaar Directory / Bazaars | The bazaar directory and individual bazaars |
+| Torn NPC Shops | Torn's own shops |
+
+Untick everything and the tab is gone entirely; reopen the panel from your userscript manager's
+menu (**Crime Item Tagger — settings**), or use **show the CIT tab everywhere** in the same menu to
+get it back. Where the tab shows is purely cosmetic: badges, dimming, the missing-item banner, the
+armoury helper and every reading still work on pages without it.
+
+The faction tabs are hash-only navigation — Torn never reloads the page when you move between
+Crimes and Armoury — so the tab appears and disappears as you switch, not on the next page load.
 
 ### Live OC data (Torn API)
 
