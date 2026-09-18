@@ -1,51 +1,63 @@
 # TORN Crime Item Tagger
 
-A userscript that tags your Torn inventory with **[C]** and **[OC]** badges, showing at a glance
-which items feed Crimes 2.0 and which feed Organized Crimes.
+Tags your inventory so you can see at a glance which items are used for **Crimes 2.0** and which are
+used for **Organized Crimes** — without cross-referencing the wiki every time.
 
 ### Organized Crime tooltip
 
 ![Organized Crime tooltip](screenshot.png)
 
-*Every organized crime that needs the item, its difficulty, which positions want it,
-and whether you get the item back.*
+*Every organized crime that needs the item, its difficulty, which positions want it, and whether you
+get the item back.*
 
 ### Crimes tooltip
 
 ![Crimes tooltip](screenshot2.png)
 
-*What the item does in each regular crime — and for forgery materials, every project
-it can be used to make.*
+*What the item does in each crime — and for forgery materials, every project it can be used to make.*
 
-## What it does
+## What you see
 
-Badges sit on each item row, right after the quantity. The number is always *how many crimes
-use the item*; the tooltip breaks down the positions inside each one.
+Badges sit on each item row, right after the quantity. The number is always *how many crimes use the
+item*; the tooltip breaks down the positions inside each one.
 
-- **`C`** / **`C ×2`** — used in that many regular crimes. Hover for each crime and what the item
-  does there. For forgery materials, the tooltip lists every project you can make with it.
-- **`OC ×3`** — used in that many organized crimes. Hover for each crime, its difficulty, which
-  positions need it, and whether the item is consumed or returned to you.
-- **`OC ×3 ✓`** — the OC you are currently in needs this, and everyone in it has one.
-- **`OC ×3 ⚠`** — the OC you are currently in needs this, and one or more **teammates don't have it
-  yet**. The tooltip names the teammate and links to their profile, so you can send them a spare.
+| Badge | Meaning |
+|---|---|
+| `C` / `C ×2` | Used in that many regular crimes |
+| `OC ×3` | Used in that many organized crimes |
+| `OC ×3 ✓` | The OC you are in needs it, and everyone has one |
+| `OC ×3 ⚠` | The OC you are in needs it, and a teammate does not have it yet |
 
-### If *you* are the one missing an item
+Hovering a badge gives the detail: which crimes, which positions inside each, the crime's difficulty,
+whether the item is consumed or returned, and how many you hold.
 
-A badge can't tell you that — a missing item has no inventory row to put a badge on. So instead
-you get a **red banner** at the top of the page naming the item, your position, and how long until
-the crime runs, plus a red dot on the CIT tab. You can hide the banner, but it reappears on every
-page load until you actually have the item — so it can't be forgotten before the crime runs.
+### If *you* are missing an item
 
-### The panel
+A badge cannot tell you that — an item you do not own has no inventory row to put a badge on. So you
+get a **red banner** naming the item, your position and the countdown, plus a red dot on the CIT tab.
+You can hide the banner, but it returns on every page load until you have the item.
 
-A **CIT** tab on the right edge opens:
+### If a *teammate* is missing an item
 
-- **Your current OC** — status, countdown, and which positions are covered.
-- **OC item coverage** — every OC item in the game, split into held and missing, sorted by how many
-  positions want it. The top of that list unblocks the most crimes.
-- **Forgery readiness** — which of the 17 forgery projects you can complete now, and what's blocking
-  the rest.
+The tooltip names them and links them. Clicking that name takes you to the faction armoury, scrolls
+to the item's **Available** row, highlights it, and copies `TheirName [12345]` to your clipboard so
+the member box is one paste away.
+
+**The script never clicks Loan and never fills the form.** It gets you to the right row with the
+right text on the clipboard; every action that moves an item is yours.
+
+## The panel
+
+A **CIT** tab sits on the right edge of every Torn page. It opens:
+
+- **Your current OC** — status, countdown, which positions are covered and which teammates are short.
+- **Organized Crime item coverage** — every OC item in the game, held versus missing, sorted by how
+  many positions want it. The top of that list unblocks the most crimes.
+- **Crime item coverage** — the same idea per crime: Arson, Bootlegging, Burglary, Card Skimming,
+  Cracking, Disposal, Forgery, Graffiti and the rest, each with a held/total count. Forgery also
+  lists which of the 17 projects you can complete now and what is blocking the others.
+
+Every section collapses, and remembers whether you left it open.
 
 ## Installation
 
@@ -53,38 +65,44 @@ A **CIT** tab on the right edge opens:
 2. Install the script from [Greasyfork](https://greasyfork.org/).
 3. Open your items page. Done — it works with no further setup.
 
-## API key (optional)
+## API key — optional
 
-The script works without a key using its built-in crime data. Adding a key enables live status for
-the organized crime you are currently in, and pulls OC definitions straight from Torn so they stay
-correct when the game changes.
+The script works immediately with no key, using its built-in crime data.
 
-Open the **CIT** tab → paste key → Save.
+A key adds live status for the organized crime you are in, resolves teammate names, and pulls OC
+definitions from Torn directly so they stay correct when the game changes. **No faction API access is
+required** — it reads your own OC through your own key.
 
-A **Limited Access** key works. Better, use Torn's
-[custom key builder](https://www.torn.com/api.html) and grant only:
+Open the **CIT** tab, paste, save. A Limited Access key works, but a custom key scoped to these four
+selections does the same job with far less exposure:
 
-| Section | Selection |
-|---|---|
-| `torn` | `items` |
-| `torn` | `organizedcrimes` |
-| `user` | `organizedcrime` |
+| Section | Selection | Used for |
+|---|---|---|
+| `torn` | `items` | Item names and IDs |
+| `torn` | `organizedcrimes` | Every OC, its positions and required items |
+| `user` | `organizedcrime` | The OC you are currently in |
+| `user` | `basic` | Resolving teammate IDs to names |
 
-The key is stored locally by your userscript manager and is sent only to `api.torn.com`.
-Nothing is sent to the author or any third party.
+## Privacy
+
+Your key is stored locally by your userscript manager and is sent only to `api.torn.com` — the single
+host declared in `@connect`. Nothing is sent to the author or any third party. No analytics, no
+remote code, no external libraries.
 
 ## Notes
 
-- **No faction API access is needed.** Live OC status comes from `/v2/user/organizedcrime`, which
-  works on your own key.
-- Torn's inventory API returns nothing, so quantities are read from the item pages themselves.
-  They fill in per category tab as you browse.
+- Torn's inventory API returns nothing usable, so quantities are read from the item pages themselves.
+  They fill in per category tab as you browse. Where the OC feed disagrees — it knows whether your
+  position has its item — the API wins.
+- Results are cached (item catalogue and OC definitions weekly, your OC every two minutes, names for
+  a week), so normal browsing costs a handful of API calls against a limit of 100 per minute.
+- Badges are injected only on item pages. The tab, panel and banner work everywhere on Torn.
 
-## Reporting a bug
+## Found a bug?
 
-Open an issue. If badges are missing or misplaced, click **Diagnostics** in the CIT panel first and
-paste the `[CIT]` lines from the browser console (F12 → Console) — that identifies the problem
-immediately.
+Torn changes its page markup periodically, which is the most likely thing to break. Before reporting,
+click **Diagnostics** in the CIT panel, then open the browser console (F12) and include the `[CIT]`
+lines — they pinpoint the problem straight away. Do not paste your API key.
 
 ## Licence
 
