@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TORN Crime Item Tagger
 // @namespace    avengerred.torn
-// @version      2.39.0
+// @version      2.39.1
 // @description  Tags your inventory with [C] and [OC] badges showing which Crimes 2.0 and Organized Crimes each item is used for. Hover for the crimes, positions and whether the item is consumed. An optional Torn API key adds live status for the OC you are in, warns you when your own position is short an item, and helps you loan one to a teammate.
 // @author       AvengerRed
 // @license      MIT
@@ -1832,24 +1832,36 @@
        cached ON_* flags, because the faction tabs are hash-only navigation --
        switching Crimes <-> Armoury never reloads the page. Order here is the
        order shown in the panel. */
+    /* Torn serves some pages as their own .php and others through
+       page.php?sid=<name>, and the sid can sit in the query or after the hash
+       (page.php?sid=crimes#/ is the Crimes page). Read it once and match on it,
+       so a page reachable either way is caught either way. */
+    const pageSid = () => {
+        const m = /[?&#]sid=([a-z0-9_]+)/i.exec(location.search + location.hash);
+        return m ? m[1].toLowerCase() : '';
+    };
+
+    /* Where the tab may appear. Tested against the live URL rather than the
+       cached ON_* flags, because the faction tabs and the page.php views are
+       hash navigation -- switching Crimes <-> Armoury never reloads the page.
+       Order here is the order shown in the panel. */
     const TAB_PAGES = [
         { k: 'everywhere', label: 'Everywhere',
           test: () => true },
         { k: 'items',      label: 'Items',
-          test: () => /\/items?\.php/.test(location.pathname) },
+          test: () => /\/items?\.php/.test(location.pathname) || pageSid() === 'items' },
         { k: 'crimes',     label: 'Crimes',
-          test: () => /\/crimes\.php/.test(location.pathname) },
+          test: () => pageSid() === 'crimes' || /\/crimes\.php/.test(location.pathname) },
         { k: 'faccrimes',  label: 'Faction \u2192 Crimes',
           test: () => /\/factions\.php/.test(location.pathname) && /tab=crimes/i.test(location.hash) },
         { k: 'facarmoury', label: 'Faction \u2192 Armoury',
           test: () => /\/factions\.php/.test(location.pathname) && /tab=armoury/i.test(location.hash) },
         { k: 'imarket',    label: 'Item Market',
-          test: () => /\/imarket\.php/.test(location.pathname)
-                      || /sid=ItemMarket/i.test(location.search + location.hash) },
+          test: () => pageSid() === 'itemmarket' || /\/imarket\.php/.test(location.pathname) },
         { k: 'bazaar',     label: 'Bazaar Directory / Bazaars',
-          test: () => /\/bazaar\.php/.test(location.pathname) },
+          test: () => pageSid() === 'bazaar' || /\/bazaar\.php/.test(location.pathname) },
         { k: 'shops',      label: 'Torn NPC Shops',
-          test: () => /\/shops\.php/.test(location.pathname) }
+          test: () => pageSid() === 'shops' || /\/shops\.php/.test(location.pathname) }
     ];
 
     function tabAllowedHere() {
