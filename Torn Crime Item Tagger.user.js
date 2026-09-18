@@ -1,17 +1,13 @@
 // ==UserScript==
 // @name         TORN Crime Item Tagger
 // @namespace    avengerred.torn
-// @version      2.17.0
+// @version      2.18.1
 // @description  Tags your inventory with [C] and [OC] badges showing which Crimes 2.0 and Organized Crimes each item is used for. Hover for the crimes, positions, and whether the item is consumed. Optional Torn API key adds live status for the OC you are in.
 // @author       AvengerRed
 // @license      MIT
 // @homepageURL  https://github.com/AvengerRed/torn-crime-item-tagger
 // @supportURL   https://github.com/AvengerRed/torn-crime-item-tagger/issues
-// @match        https://www.torn.com/item.php*
-// @match        https://www.torn.com/items.php*
-// @match        https://www.torn.com/bazaar.php*
-// @match        https://www.torn.com/imarket.php*
-// @match        https://www.torn.com/factions.php*
+// @match        https://www.torn.com/*
 // @connect      api.torn.com
 // @grant        GM_registerMenuCommand
 // @grant        GM_getValue
@@ -38,7 +34,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '2.17.0';
+    const VERSION = '2.18.1';
     const LOG = (...a) => console.log('%c[CIT]', 'color:#d4a017;font-weight:bold', ...a);
     const WARN = (...a) => console.warn('[CIT]', ...a);
 
@@ -1227,6 +1223,7 @@
 
     let pending = null;
     function refresh(force) {
+        if (!ON_ITEMS) return;
         if (force) document.querySelectorAll('[data-cit-sig]').forEach(r => delete r.dataset.citSig);
         const rs = rows();
         harvestDomInv(rs);
@@ -1500,6 +1497,9 @@
        ================================================================== */
 
     const ON_FACTIONS = /\/factions\.php/.test(location.pathname);
+    /* Badges only make sense where item rows exist; the tab and panel are
+       available on every Torn page. */
+    const ON_ITEMS = /\/(item|items|bazaar|imarket)\.php/.test(location.pathname);
 
     function loanBanner(html, tone) {
         document.getElementById('cit-banner')?.remove();
@@ -1512,21 +1512,50 @@
         return b;
     }
 
-    /* Smallest element containing the item name, an "Available" marker and a
-       Loan control. Class names on this page are unknown, so match on content. */
+    /* The row action is "Loan"; the form's submit button is "LOAN". Case is what
+       separates them, so match exactly and never fall back to a loose compare
+       that could hit the submit button. Any tag can carry the text -- Torn uses
+       a span here, not an anchor. */
+    const LOAN_TAGS = 'a, button, span, div, td, li';
+
+    function loanControlIn(root) {
+        return Array.prototype.find.call(root.querySelectorAll(LOAN_TAGS), el => {
+            if (el.querySelector(LOAN_TAGS)) return false;          // innermost only
+            return (el.textContent || '').trim() === 'Loan';        // exact case
+        }) || null;
+    }
+
+    /* Smallest element holding the item name, an Available marker and a Loan
+       control -- and not the already-expanded loan form. */
     function findArmouryRow(itemName) {
         const cands = [];
-        document.querySelectorAll('li, tr, div').forEach(el => {
+        document.querySelectorAll('li, tr, div, td').forEach(el => {
             const t = el.textContent || '';
             if (t.indexOf(itemName) === -1) return;
             if (!/Available/i.test(t)) return;
-            if (t.length > 400) return;
-            if (!Array.prototype.some.call(el.querySelectorAll('a, button'),
-                    x => /^Loan$/i.test((x.textContent || '').trim()))) return;
+            if (/Please select quantity/i.test(t)) return;           // the open form
+            if (t.length > 300) return;
+            if (!loanControlIn(el)) return;
             cands.push(el);
         });
         cands.sort((a, b) => a.querySelectorAll('*').length - b.querySelectorAll('*').length);
+        LOG('armoury assist: row candidates for', itemName, '=', cands.length);
         return cands[0] || null;
+    }
+
+    /* If we cannot find the row, dump what the page actually looks like around
+       that item so the markup can be pinned instead of guessed at. */
+    function dumpArmouryContext(itemName) {
+        const hit = Array.prototype.find.call(
+            document.querySelectorAll('li, tr, div, td'),
+            el => (el.textContent || '').indexOf(itemName) !== -1 &&
+                  !el.querySelector('li, tr, td') &&
+                  (el.textContent || '').length < 120);
+        if (!hit) { LOG('armoury assist: item name not present on this page at all'); return; }
+        let n = hit, up = 0;
+        while (n.parentElement && up < 4) { n = n.parentElement; up++; }
+        LOG('armoury assist: context around "' + itemName + '" (paste this):',
+            n.outerHTML.slice(0, 2000));
     }
 
     /* React ignores a plain .value assignment, so use the native setter and
@@ -1639,8 +1668,10 @@
             if (++tries > 40) {                             // ~20s
                 clearInterval(timer);
                 loanBanner(`Could not find an available <b>${esc(it.itemName)}</b> row.` +
-                    `<div class="cit-banner-sub">Loan it to <b>${esc(who)}</b> manually.</div>`);
+                    `<div class="cit-banner-sub">Loan it to <b>${esc(who)}</b> manually. ` +
+                    `Details written to the console (F12).</div>`);
                 LOG('armoury assist: no available row for', it.itemName);
+                dumpArmouryContext(it.itemName);
                 return;
             }
             const row = findArmouryRow(it.itemName);
@@ -1650,8 +1681,7 @@
             row.scrollIntoView({ block: 'center' });
             row.style.outline = '2px solid #d4a017';
 
-            const loanEl = Array.prototype.find.call(row.querySelectorAll('a, button'),
-                x => /^Loan$/i.test((x.textContent || '').trim()));
+            const loanEl = loanControlIn(row);
             if (!loanEl) {
                 loanBanner(`Found <b>${esc(it.itemName)}</b> but no Loan control on that row.`);
                 return;
@@ -1727,19 +1757,24 @@
         repaintPanel();
     }
 
-    if (ON_FACTIONS) {
-        armouryAssist();
-        LOG('v' + VERSION + ' loaded on the faction page (armoury loan assist only).');
-        return;
-    }
-
-    new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true });
+    /* Everywhere on Torn: the tab, the panel and the missing-item banner. */
     mountTab();
     setInterval(mountTab, 3000);          // Torn re-renders aggressively; keep the tab alive
-    refresh(true);
     if (getV('cit_open', false)) openPanel();
+
+    /* Only where item rows exist: badge injection and the DOM observer. */
+    if (ON_ITEMS) {
+        new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true });
+        refresh(true);
+    }
+
+    /* Only on the faction page: finish a loan started from a teammate's name. */
+    if (ON_FACTIONS) armouryAssist();
+
     bootstrap(false);
 
-    LOG('v' + VERSION + ' loaded —', Object.keys(ITEMS).length, 'items mapped.',
-        S.key ? 'API key present.' : 'No API key — open settings from the Tampermonkey menu to add one.');
+    LOG('v' + VERSION + ' loaded on', location.pathname,
+        '\u2014 badges:', ON_ITEMS ? 'on' : 'off (not an item page)',
+        '\u2014', Object.keys(ITEMS).length, 'items mapped.',
+        S.key ? 'API key present.' : 'No API key \u2014 open the CIT tab to add one.');
 })();
