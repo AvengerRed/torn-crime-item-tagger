@@ -1,0 +1,77 @@
+name: Bug report
+description: Badges missing, in the wrong place, or showing the wrong information
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this.
+
+        The **Diagnostics** output is by far the most useful thing you can include —
+        it usually identifies the problem immediately. Please don't skip it.
+
+  - type: input
+    id: version
+    attributes:
+      label: Script version
+      description: Shown at the top of the CIT panel.
+      placeholder: v2.9.1
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What did you expect, and what did you get instead?
+      placeholder: |
+        No badges appear on the Materials tab.
+        The OC count says 2, but the item is used in 3 organized crimes.
+    validations:
+      required: true
+
+  - type: input
+    id: page
+    attributes:
+      label: Which page
+      placeholder: item.php — Materials tab
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics output
+      description: >
+        Open the CIT tab → click **Diagnostics** → press F12 → Console tab.
+        Paste every line starting with [CIT].
+      render: text
+    validations:
+      required: true
+
+  - type: dropdown
+    id: apikey
+    attributes:
+      label: Do you have an API key saved in the script?
+      options:
+        - "Yes"
+        - "No"
+    validations:
+      required: true
+
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and userscript manager
+      placeholder: Chrome 140 + Tampermonkey 5.3
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Before submitting
+      options:
+        - label: I have not included my Torn API key anywhere in this report
+          required: true
