@@ -3,7 +3,19 @@
 A userscript that tags your Torn inventory with **[C]** and **[OC]** badges, showing at a glance
 which items feed Crimes 2.0 and which feed Organized Crimes.
 
-![badges](screenshot.png)
+### Organized Crime tooltip
+
+![Organized Crime tooltip](screenshot.png)
+
+*Every organized crime that needs the item, its difficulty, which positions want it,
+and whether you get the item back.*
+
+### Crimes tooltip
+
+![Crimes tooltip](screenshot2.png)
+
+*What the item does in each regular crime — and for forgery materials, every project
+it can be used to make.*
 
 ## What it does
 
@@ -26,9 +38,10 @@ The script works without a key using its built-in crime data. Adding a key enabl
 the organized crime you are currently in, and pulls OC definitions straight from Torn so they stay
 correct when the game changes.
 
-Click on **CIT** button on the right side → paste key → Save.
+Open the **CIT** tab → paste key → Save.
 
-A **Limited Access** key is enough. **No NEED for Full Access key.**
+A **Limited Access** key works. Better, use Torn's
+[custom key builder](https://www.torn.com/api.html) and grant only:
 
 | Section | Selection |
 |---|---|
