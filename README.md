@@ -19,12 +19,33 @@ it can be used to make.*
 
 ## What it does
 
-- **`C ×n`** — the item is used in *n* regular crimes. Hover for each crime and what the item does there.
-- **`OC ×n`** — the item is used in *n* organized crimes. Hover for each crime, its difficulty, and
-  exactly which positions need it, plus whether the item is consumed or returned.
-- **`OC ×n ⚠ YOU`** — pulsing red: *your own position* in the OC you are currently in is missing this item.
-- A **CIT** tab on the right edge opens a panel with your current OC, coverage across every OC in the
-  game, and a Forgery readiness planner.
+Badges sit on each item row, right after the quantity. The number is always *how many crimes
+use the item*; the tooltip breaks down the positions inside each one.
+
+- **`C`** / **`C ×2`** — used in that many regular crimes. Hover for each crime and what the item
+  does there. For forgery materials, the tooltip lists every project you can make with it.
+- **`OC ×3`** — used in that many organized crimes. Hover for each crime, its difficulty, which
+  positions need it, and whether the item is consumed or returned to you.
+- **`OC ×3 ✓`** — the OC you are currently in needs this, and everyone in it has one.
+- **`OC ×3 ⚠`** — the OC you are currently in needs this, and one or more **teammates don't have it
+  yet**. The tooltip names those positions and links to their profiles, so you can send them a spare.
+
+### If *you* are the one missing an item
+
+A badge can't tell you that — a missing item has no inventory row to put a badge on. So instead
+you get a **red banner** at the top of the page naming the item, your position, and how long until
+the crime runs, plus a red dot on the CIT tab. The banner can be dismissed, and returns if the
+situation changes.
+
+### The panel
+
+A **CIT** tab on the right edge opens:
+
+- **Your current OC** — status, countdown, and which positions are covered.
+- **OC item coverage** — every OC item in the game, split into held and missing, sorted by how many
+  positions want it. The top of that list unblocks the most crimes.
+- **Forgery readiness** — which of the 17 forgery projects you can complete now, and what's blocking
+  the rest.
 
 ## Installation
 
