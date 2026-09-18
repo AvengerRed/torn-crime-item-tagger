@@ -28,7 +28,7 @@ use the item*; the tooltip breaks down the positions inside each one.
   positions need it, and whether the item is consumed or returned to you.
 - **`OC ×3 ✓`** — the OC you are currently in needs this, and everyone in it has one.
 - **`OC ×3 ⚠`** — the OC you are currently in needs this, and one or more **teammates don't have it
-  yet**. The tooltip names those positions and links to their profiles, so you can send them a spare.
+  yet**. The tooltip names the teammate and links to their profile, so you can send them a spare.
 
 ### If *you* are the one missing an item
 
