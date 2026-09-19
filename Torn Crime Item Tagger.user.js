@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TORN Crime Item Tagger
 // @namespace    avengerred.torn
-// @version      2.39.1
+// @version      2.40.0
 // @description  Tags your inventory with [C] and [OC] badges showing which Crimes 2.0 and Organized Crimes each item is used for. Hover for the crimes, positions and whether the item is consumed. An optional Torn API key adds live status for the OC you are in, warns you when your own position is short an item, and helps you loan one to a teammate.
 // @author       AvengerRed
 // @license      MIT
@@ -936,7 +936,10 @@
 
     function statusNote() {
         if (LOADING) return 'refreshing\u2026';
-        const bad = Object.keys(DATA.errors || {}).length;
+        /* The inventory step always fails now -- Torn retired the endpoint -- and
+           the panel already explains that in its own line. Counting it here would
+           show every user a permanent "1 error" for something working as designed. */
+        const bad = Object.keys(DATA.errors || {}).filter(k => k !== 'inventory').length;
         if (bad) return bad + (bad > 1 ? ' errors' : ' error');
         if (!S.useApi || !S.key) return 'no API key';
         return 'ok';
@@ -1039,6 +1042,21 @@
             border-radius:3px; cursor:pointer; margin:6px 6px 0 0; }
         #cit-panel button:hover { background:#555; }
         #cit-panel label { display:block; margin:4px 0; cursor:pointer; }
+        /* Checkbox rows are the only thing in here people tap, so give them a
+           finger-sized target rather than the height of the text. */
+        #cit-panel label:has(input[type=checkbox]) { padding:4px 0; min-height:22px; }
+        #cit-panel input[type=checkbox] { width:16px; height:16px; vertical-align:-3px;
+            margin-right:5px; }
+
+        /* Phones: the panel is fixed at 340px/right:40px, which runs off the edge
+           of a narrow screen. Fill the width instead and keep it clear of the
+           bottom bar. */
+        @media (max-width:520px) {
+            #cit-panel { right:8px; left:8px; width:auto; bottom:70px;
+                max-height:calc(100vh - 100px); }
+            #cit-panel label:has(input[type=checkbox]) { padding:7px 0; min-height:30px; }
+            #cit-panel input[type=checkbox] { width:18px; height:18px; }
+        }
         #cit-panel .cit-spin { display:inline-block; width:9px; height:9px; margin-right:5px;
             border:2px solid #999; border-top-color:transparent; border-radius:50%;
             vertical-align:-1px; animation:cit-rot .7s linear infinite; }
@@ -1680,15 +1698,28 @@
             <details data-sec="tabpages" ${secOpen('tabpages') ? 'open' : ''}>
               <summary>CIT button <span class="cit-sum-note">${tabWhereNote()}</span></summary>
               <div class="muted" style="font-size:11px;margin:2px 0 4px">Where the CIT tab appears. Everything else keeps working on pages without it.</div>
-              ${TAB_PAGES.map(pg => {
-                  const on   = !!S.tabOn[pg.k];
-                  const lock = pg.k !== 'everywhere' && !!S.tabOn.everywhere;
-                  return `<label${lock ? ' title="Everywhere is on, so this is already covered."' : ''}` +
-                         `${lock ? ' style="opacity:.55"' : ''}>` +
-                         `<input type="checkbox" class="cit-tabpg" data-pg="${pg.k}"` +
-                         `${on ? ' checked' : ''}${lock ? ' disabled' : ''}> ${pg.label}</label>`;
-              }).join('')}
-              ${MENU_OK ? '' : `<div class="muted" style="font-size:11px;margin-top:4px">` +
+              ${(() => {
+                  const sel  = S.tabOn;
+                  const wide = !!sel.everywhere;
+                  /* Nothing is ever disabled here. Greying the per-page boxes out
+                     while Everywhere was on left no way to narrow the selection on
+                     a manager with no menu: unticking Everywhere snapped back
+                     because the set was empty, and the boxes that would have
+                     filled it could not be tapped. Ticking a page now simply
+                     turns Everywhere off. */
+                  return TAB_PAGES.map(pg => {
+                      const on   = !!sel[pg.k];
+                      const dim  = pg.k !== 'everywhere' && wide && !on;
+                      const hint = pg.k === 'everywhere'
+                          ? 'The tab appears on every Torn page.'
+                          : (wide ? 'Tick to show the tab only on the pages you choose.'
+                                  : 'Show the tab on this page.');
+                      return `<label title="${hint}"${dim ? ' style="opacity:.6"' : ''}>` +
+                             `<input type="checkbox" class="cit-tabpg" data-pg="${pg.k}"` +
+                             `${on ? ' checked' : ''}> ${pg.label}</label>`;
+                  }).join('');
+              })()}
+              ${MENU_OK ? '' : `<div class="muted" id="cit-tabpg-warn" style="font-size:11px;margin-top:4px">` +
                   `Your userscript manager has no menu command, so at least one page must stay ticked ` +
                   `\u2014 otherwise this panel could not be reopened.</div>`}
             </details>
@@ -1800,14 +1831,37 @@
             cb.onchange = e => {
                 const on = S.tabOn;
                 const k  = e.target.getAttribute('data-pg');
-                if (e.target.checked) on[k] = true; else delete on[k];
-                /* Without a manager menu the panel is only reachable from the tab,
-                   so never let the last page be unticked -- fall back to
-                   Everywhere rather than stranding the user. */
-                if (!MENU_OK && !Object.keys(on).length) on.everywhere = true;
+
+                if (e.target.checked) {
+                    if (k === 'everywhere') {
+                        /* Everywhere supersedes the per-page picks; keep only it so
+                           the stored set matches what the panel shows. */
+                        Object.keys(on).forEach(x => delete on[x]);
+                        on.everywhere = true;
+                    } else {
+                        delete on.everywhere;   // narrowing to specific pages
+                        on[k] = true;
+                    }
+                } else {
+                    delete on[k];
+                }
+
+                /* Hiding the tab on every page leaves the manager menu as the only
+                   way back into this panel, so a manager without one (Torn PDA)
+                   keeps the last tick. This can no longer strand anyone: every box
+                   is tappable, so another page can always be ticked first. */
+                if (!MENU_OK && !Object.keys(on).length) {
+                    on[k] = true;
+                    e.target.checked = true;
+                    const note = p.querySelector('#cit-tabpg-warn');
+                    if (note) note.style.color = '#e05c4b';
+                    S.tabOn = on;
+                    return;
+                }
+
                 S.tabOn = on;
                 mountTab();                   // apply now, don't wait for the interval
-                repaintPanel();               // Everywhere locks/unlocks the rest
+                repaintPanel();
             };
         });
     }
