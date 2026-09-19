@@ -116,22 +116,39 @@ If you would rather not have the tab on every page, tick only the pages you want
 
 | Option | Where |
 |---|---|
-| **Everywhere** | Any Torn page — the default. Ticking this greys out the rest, since they are already covered. |
+| **Everywhere** | Any Torn page — the default |
 | Items | Your own items page |
-| Crimes | The Crimes 2.0 page |
+| Crimes | The Crimes 2.0 page, including every individual crime |
 | Faction → Crimes | Your faction's organized crimes tab |
 | Faction → Armoury | Your faction's armoury tab |
 | Item Market | The item market |
 | Bazaar Directory / Bazaars | The bazaar directory and individual bazaars |
 | Torn NPC Shops | Torn's own shops |
 
-Untick everything and the tab is gone entirely; reopen the panel from your userscript manager's
-menu (**Crime Item Tagger — settings**), or use **show the CIT tab everywhere** in the same menu to
-get it back. Where the tab shows is purely cosmetic: badges, dimming, the missing-item banner, the
-armoury helper and every reading still work on pages without it.
+**You never have to untick Everywhere first.** Tick any specific page and Everywhere switches
+itself off — so going from "everywhere" to "only on Crimes" is a single tap on Crimes. Tick
+Everywhere again and the individual pages clear and fade out, because Everywhere already covers
+them. They stay tappable the whole time: tapping one simply narrows the selection again.
 
-The faction tabs are hash-only navigation — Torn never reloads the page when you move between
-Crimes and Armoury — so the tab appears and disappears as you switch, not on the next page load.
+Where the tab shows is purely cosmetic. Badges, dimming, the missing-item banner, the armoury
+helper and every reading still work normally on pages without it.
+
+### On Torn PDA and mobile
+
+This is the one place the two platforms differ, and it is worth knowing before you go hunting for a
+setting that is not there.
+
+Desktop userscript managers give the script a menu entry, so on desktop you can untick every page
+and hide the tab completely — **Crime Item Tagger — settings** in the Tampermonkey menu still
+reopens this panel, and **show the CIT tab everywhere** puts it back.
+
+Torn PDA has no such menu, so the tab is the only way back into the panel. At least one page
+therefore stays ticked: try to untick the last one and it stays put, and the note under the
+checkboxes turns red to say why. Nothing is ever locked — to change which page it is, tick the new
+one first, then untick the old one.
+
+The panel also lays itself out for narrow screens: full width with finger-sized checkbox rows
+below 520px, rather than the fixed-width desktop panel.
 
 ### Live OC data (Torn API)
 
