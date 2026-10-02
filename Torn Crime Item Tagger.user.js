@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TORN Crime Item Tagger
 // @namespace    avengerred.torn
-// @version      2.40.0
+// @version      2.41.0
 // @description  Tags your inventory with [C] and [OC] badges showing which Crimes 2.0 and Organized Crimes each item is used for. Hover for the crimes, positions and whether the item is consumed. An optional Torn API key adds live status for the OC you are in, warns you when your own position is short an item, and helps you loan one to a teammate.
 // @author       AvengerRed
 // @license      MIT
@@ -198,9 +198,11 @@
         'DSLR Camera':         { oc: 'OC tool' },
         'RF Detector':         { oc: 'OC tool' },
         'Construction Helmet': { oc: 'OC tool' },
-        'Binoculars':          { oc: 'OC tool: Stage Fright' },
+        'Binoculars':          { oc: 'OC tool: Stage Fright, Crane Reaction' },
         'Billfold':            { oc: 'OC tool: Honey Trap (x2)' },
-        'Bolt Cutters':        { oc: 'OC tool: No Reserve' },
+        'Bolt Cutters':        { oc: 'OC tool: No Reserve, Dish It Out' },
+        'Spray Paint : Black': { oc: 'OC tool: No Reserve' },
+        'Single Red Rose':     { oc: 'OC tool: Ship Happens' },
         'Dental Mirror':       { oc: 'OC tool: Bidding War' },
         'Wireless Dongle':     { oc: 'OC tool' },
         'Core Drill':          { oc: 'OC tool: Blast from the Past' },
@@ -213,7 +215,7 @@
         'Bone Saw':            { oc: 'OC tool' },
         'Hard Drive':          { oc: 'OC tool' },
         'China Lake':          { oc: 'OC tool' },
-        'Remote Detonator':    { oc: 'OC tool' },
+        'Remote Detonator':    { oc: 'OC tool: Crane Reaction' },
 
         /* ---------- OC materials (consumed) ---------- */
         'Shaving Foam':           { oc: 'OC material (used up)' },
@@ -228,7 +230,7 @@
         'Flash Grenade':          { oc: 'OC material: Bidding War (used up)' },
         'Ipecac Syrup':           { oc: 'OC material (used up)' },
         'Tunneling Virus':        { oc: 'OC material (used up)' },
-        'Shaped Charge':          { oc: 'OC material: Blast from the Past (used up)' },
+        'Shaped Charge':          { oc: 'OC material: Blast from the Past, Crane Reaction (used up)' },
         'Firewalk Virus':         { oc: 'OC material: Blast from the Past (used up)' },
         'Razor Wire':             { oc: 'OC material (used up)' },
         'Floor Cleaner':          { oc: 'OC material (used up)' },
@@ -241,7 +243,7 @@
         'Syringe':                { oc: 'OC material: Clinical Precision (used up)' },
         'Igniter Cord':           { oc: 'OC material (used up)' },
         'Nail Bomb':              { oc: 'OC material (used up)' },
-        'Tear Gas':               { oc: 'OC material (used up)' }
+        'Tear Gas':               { oc: 'OC material: Crane Reaction (used up)' },
     };
 
     const PREFIX_RULES = [
