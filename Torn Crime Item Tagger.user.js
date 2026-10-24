@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TORN Crime Item Tagger
 // @namespace    avengerred.torn
-// @version      2.41.0
+// @version      2.42.0
 // @description  Tags your inventory with [C] and [OC] badges showing which Crimes 2.0 and Organized Crimes each item is used for. Hover for the crimes, positions and whether the item is consumed. An optional Torn API key adds live status for the OC you are in, warns you when your own position is short an item, and helps you loan one to a teammate.
 // @author       AvengerRed
 // @license      MIT
@@ -108,7 +108,7 @@
         'Lost and Found Office Key': { c: 'Search For Cash: extra outcomes in the Subway' },
 
         /* ---------- Bootlegging ---------- */
-        'Blank DVD':         { c: 'Bootlegging: consumed by Copy DVDs' },
+        'Blank DVDs':        { c: 'Bootlegging: consumed by Copy DVDs' },
         'Personal Computer': { c: 'Bootlegging / Card Skimming' },
         'Laptop':            { c: 'Bootlegging / Card Skimming / Cracking' },
         'Gold Laptop':       { c: 'Bootlegging / Card Skimming / Cracking' },
@@ -201,7 +201,6 @@
         'Binoculars':          { oc: 'OC tool: Stage Fright, Crane Reaction' },
         'Billfold':            { oc: 'OC tool: Honey Trap (x2)' },
         'Bolt Cutters':        { oc: 'OC tool: No Reserve, Dish It Out' },
-        'Spray Paint : Black': { oc: 'OC tool: No Reserve' },
         'Single Red Rose':     { oc: 'OC tool: Ship Happens' },
         'Dental Mirror':       { oc: 'OC tool: Bidding War' },
         'Wireless Dongle':     { oc: 'OC tool' },
@@ -712,6 +711,22 @@
     const LOOKUP = {};
     for (const k in ITEMS) LOOKUP[k.toLowerCase()] = ITEMS[k];
 
+    /* The crime data was compiled from the wiki, which writes item names in prose,
+       while matching is against Torn's catalogue names -- so a single missing "s"
+       ("Blank DVD" vs Torn's "Blank DVDs") silently cost that item its badge.
+       A loose index on the singular form absorbs that difference in both
+       directions. It is only consulted after an exact hit fails, so it can never
+       override a deliberate entry. */
+    const singular = k => k
+        .replace(/\bies$/, 'y')
+        .replace(/(?:ch|sh|ss|x|z)es$/, m => m.slice(0, -2))
+        .replace(/([^s])s$/, '$1');
+    const LOOKUP_LOOSE = {};
+    for (const k in ITEMS) {
+        const sk = singular(k.toLowerCase());
+        if (!(sk in LOOKUP)) LOOKUP_LOOSE[sk] = ITEMS[k];
+    }
+
     // itemId -> crime data, built once the catalogue is available
     let BY_ID = null;
     function buildIdMap() {
@@ -726,8 +741,11 @@
     }
 
     function tagsForName(name) {
-        const key = String(name).trim().toLowerCase();
+        const key = String(name).trim().toLowerCase().replace(/\s+/g, ' ');
         if (LOOKUP[key]) return LOOKUP[key];
+        const sk = singular(key);
+        if (LOOKUP_LOOSE[sk]) return LOOKUP_LOOSE[sk];
+        if (LOOKUP[sk]) return LOOKUP[sk];
         for (const r of PREFIX_RULES) if (r.test(name)) return r.data(name);
         return null;
     }
@@ -1802,6 +1820,26 @@
                 '| sell-list rows:', document.querySelectorAll('ul.sell-items-list > li').length,
                 '| item rows after filtering:', rs.length);
             LOG('errors:', JSON.parse(JSON.stringify(DATA.errors)));
+            /* The commonest cause of "I own this but it is not badged" is a name
+               in the table that Torn does not use, so matching never resolves an
+               id. List those explicitly instead of leaving it to guesswork. */
+            if (haveNameIndex()) {
+                const unmatched = Object.keys(ITEMS).filter(n => !idForName(n));
+                LOG('table names Torn does not recognise (' + unmatched.length +
+                    ' of ' + Object.keys(ITEMS).length + '):',
+                    unmatched.join(' | ') || 'none');
+                const inv = effInv() || {};
+                const owned = Object.keys(ITEMS).filter(n => {
+                    const id = idForName(n);
+                    return id && inv[id] > 0;
+                }).length;
+                LOG('tagged items you currently hold:', owned,
+                    '| inventory source:', DATA.inventory ? 'API' : 'pages browsed',
+                    '| stacks seen:', Object.keys(inv).length);
+            } else {
+                LOG('no name index yet \u2014 open the CIT panel with a key saved, ' +
+                    'or browse an item page, then run Diagnostics again');
+            }
             LOG('catalogue:', DATA.catalogue ? Object.keys(DATA.catalogue).length : null,
                 '| inventory(api):', DATA.inventory ? Object.keys(DATA.inventory).length : null,
                 '| inventory(dom):', DATA.domInv ? Object.keys(DATA.domInv).length : null,
