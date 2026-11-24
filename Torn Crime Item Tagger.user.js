@@ -1038,10 +1038,14 @@
         #cit-tab { position:fixed; right:0; top:55%; z-index:2147483000;
             background:#1c1c1c; color:#d4a017; border:2px solid #d4a017; border-right:none;
             border-radius:4px 0 0 4px; width:30px; height:30px; line-height:28px;
-            text-align:center; cursor:pointer; user-select:none;
+            appearance:none; margin:0; padding:0; box-sizing:content-box;
+            text-align:center; cursor:grab; user-select:none; touch-action:none;
             font:bold 11px/28px Arial,sans-serif; letter-spacing:0;
             box-shadow:-2px 2px 8px rgba(0,0,0,.6); transition:background .15s; }
         #cit-tab:hover { background:#3a3a3a; }
+        #cit-tab.cit-tab-floating { right:auto; border-right:2px solid #d4a017;
+            border-radius:4px; z-index:2147483501; }
+        #cit-tab.cit-tab-dragging { cursor:grabbing; }
         #cit-tab .cit-dot { position:absolute; top:-4px; left:-4px; width:9px; height:9px;
             border-radius:50%; background:#c0392b; border:1px solid #000;
             animation:cit-pulse 1.4s ease-in-out infinite; }
@@ -1717,7 +1721,7 @@
 
             <details data-sec="tabpages" ${secOpen('tabpages') ? 'open' : ''}>
               <summary>CIT button <span class="cit-sum-note">${tabWhereNote()}</span></summary>
-              <div class="muted" style="font-size:11px;margin:2px 0 4px">Where the CIT tab appears. Everything else keeps working on pages without it.</div>
+              <div class="muted" style="font-size:11px;margin:2px 0 4px">Drag the CIT button to move it. These settings control which pages show it.</div>
               ${(() => {
                   const sel  = S.tabOn;
                   const wide = !!sel.everywhere;
@@ -1921,7 +1925,7 @@
         MENU_OK = true;
     } catch (e) {}
 
-    /* ---- Persistent side tab, bottom-right, like the HT / FF tabs ---- */
+    /* ---- Persistent CIT button ---- */
     /* Where the tab may appear. Tested against the live URL rather than the
        cached ON_* flags, because the faction tabs are hash-only navigation --
        switching Crimes <-> Armoury never reloads the page. Order here is the
@@ -1964,6 +1968,76 @@
         return TAB_PAGES.some(pg => pg.k !== 'everywhere' && on[pg.k] && pg.test());
     }
 
+    function makeTabDraggable(tab) {
+        let savedPosition;
+        try { savedPosition = JSON.parse(getV('cit_tab_position', null)); } catch (e) {}
+        if (!Number.isFinite(savedPosition?.x) || !Number.isFinite(savedPosition?.y)) savedPosition = null;
+
+        const place = position => {
+            tab.classList.toggle('cit-tab-floating', !!position);
+            const x = position ? `${position.x * 100}%` : '';
+            const y = position ? `${position.y * 100}%` : '';
+            tab.style.left = x;
+            tab.style.top = y;
+            // Subtract the same fraction of the button's size to keep it inside the viewport.
+            tab.style.transform = position ? `translate(-${x}, -${y})` : '';
+        };
+        place(savedPosition);
+
+        let drag = null;
+        let suppressClick = false;
+        tab.addEventListener('pointerdown', event => {
+            if (drag || !event.isPrimary || event.button !== 0) return;
+            const { left, top } = tab.getBoundingClientRect();
+            drag = { id: event.pointerId, x: event.clientX, y: event.clientY, left, top, position: null };
+            suppressClick = false;
+            tab.setPointerCapture(event.pointerId);
+        });
+
+        tab.addEventListener('pointermove', event => {
+            if (drag?.id !== event.pointerId) return;
+            const dx = event.clientX - drag.x;
+            const dy = event.clientY - drag.y;
+            if (!drag.position && Math.hypot(dx, dy) < 5) return;
+
+            tab.classList.add('cit-tab-floating', 'cit-tab-dragging');
+            const viewport = document.documentElement;
+            const width = Math.max(1, viewport.clientWidth - tab.offsetWidth);
+            const height = Math.max(1, viewport.clientHeight - tab.offsetHeight);
+            drag.position = {
+                x: Math.max(0, Math.min(1, (drag.left + dx) / width)),
+                y: Math.max(0, Math.min(1, (drag.top + dy) / height))
+            };
+            place(drag.position);
+        });
+
+        const finish = event => {
+            if (drag?.id !== event.pointerId) return;
+            const { position } = drag;
+            drag = null;
+            if (!position) return;
+
+            suppressClick = true;
+            tab.classList.remove('cit-tab-dragging');
+            if (event.type === 'pointerup') {
+                savedPosition = position;
+                setV('cit_tab_position', JSON.stringify(position));
+            } else {
+                place(savedPosition);
+            }
+        };
+        tab.addEventListener('pointerup', finish);
+        tab.addEventListener('pointercancel', finish);
+        tab.addEventListener('lostpointercapture', finish);
+        tab.addEventListener('click', event => {
+            if (suppressClick && event.detail > 0) {
+                event.stopPropagation();
+                return;
+            }
+            togglePanel();
+        });
+    }
+
     function mountTab() {
         /* Where the tab shows is cosmetic only: badges, the missing-item banner,
            the armoury helper and every harvest run off page events, not off this
@@ -1972,11 +2046,11 @@
            constantly and moves between faction tabs without a page load. */
         if (!tabAllowedHere()) { document.getElementById('cit-tab')?.remove(); return; }
         if (document.getElementById('cit-tab')) return;
-        const tab = document.createElement('div');
+        const tab = document.createElement('button');
+        tab.type = 'button';
         tab.id = 'cit-tab';
-        tab.title = 'Crime Item Tagger — click for settings';
         tab.textContent = 'CIT';
-        tab.onclick = togglePanel;
+        makeTabDraggable(tab);
         document.body.appendChild(tab);
         updateTabDot();
     }
@@ -1988,11 +2062,13 @@
         tab.querySelector('.cit-dot')?.remove();
         const alert = DATA.ocIndex && Object.keys(DATA.ocIndex)
             .some(id => DATA.ocIndex[id].mine && !DATA.ocIndex[id].myAvailable);
+        tab.title = alert
+            ? 'Crime Item Tagger — your OC slot is missing its item. Drag to move.'
+            : 'Crime Item Tagger — click for settings or drag to move';
         if (alert) {
             const d = document.createElement('span');
             d.className = 'cit-dot';
             tab.appendChild(d);
-            tab.title = 'Crime Item Tagger — your OC slot is missing its item';
         }
     }
 
